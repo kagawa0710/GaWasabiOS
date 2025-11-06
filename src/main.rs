@@ -8,6 +8,9 @@ use core::panic::PanicInfo;
 use core::ptr::null_mut;
 use core::slice;
 
+// インラインアセンブリを使うための宣言
+use core::arch::asm;
+
 type EfiVoid = u8;
 type EfiHandle = u64;
 type Result<T> = core::result::Result<T, &'static str>;
@@ -51,7 +54,7 @@ struct EfiSystemTable {
     _reserved0: [u64; 12],
     pub boot_services: &'static EfiBootServicesTable,
 }
-const _: () =assert!(offset_of!(EfiSystemTable, boot_services) == 96);
+const _: () = assert!(offset_of!(EfiSystemTable, boot_services) == 96);
 
 #[repr(C)]
 #[derive(Debug)]
@@ -59,7 +62,7 @@ struct EfiGraphicsOutputProtocolPixelInfo {
     pub version: u32,
     pub horizontal_resolution: u32,
     pub vertical_resolution: u32,
-    _padding0:[u32; 5],
+    _padding0: [u32; 5],
     pub pixels_per_scan_line: u32,
 }
 const _: () = assert!(size_of::<EfiGraphicsOutputProtocolPixelInfo>() == 36);
@@ -88,12 +91,19 @@ fn locate_graphic_protocol<'a>(
     let status = (efi_system_table.boot_services.locate_protocol)(
         &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
         null_mut::<EfiVoid>(),
-        &mut efi_graphics_output_protocol as *mut *mut EfiGraphicsOutputProtocol as *mut *mut EfiVoid,
+        &mut efi_graphics_output_protocol as *mut *mut EfiGraphicsOutputProtocol
+            as *mut *mut EfiVoid,
     );
     if status != EfiStatus::Success {
-        return Err("Failed to locate graphics outptut protocol")
+        return Err("Failed to locate graphics outptut protocol");
     }
     Ok(unsafe { &*efi_graphics_output_protocol })
+}
+
+pub fn hlt() {
+    unsafe {
+        asm!("hlt");
+    }
 }
 
 #[no_mangle]
@@ -118,11 +128,15 @@ fn efi_main(_image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     // println!("Hello, world!");
 
     // 画面を保つために無限ループ
-    loop {}
+    loop {
+        hlt()
+    }
 }
 
 // panic!()が呼ばれたときの処理
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    loop {
+        hlt()
+    }
 }
