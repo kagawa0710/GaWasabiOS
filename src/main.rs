@@ -2,16 +2,16 @@
 #![no_main]
 #![feature(offset_of)]
 
+// インラインアセンブリを使うための宣言
+use core::arch::asm;
+use core::cmp::min;
+use core::fmt;
+use core::fmt::Write;
 use core::mem::offset_of;
 use core::mem::size_of;
 use core::panic::PanicInfo;
 use core::ptr::null_mut;
-
-// インラインアセンブリを使うための宣言
-use core::arch::asm;
-
-// min関数を使うための宣言
-use core::cmp::min;
+use core::writeln;
 
 type EfiVoid = u8;
 type EfiHandle = u64;
@@ -111,44 +111,7 @@ pub fn hlt() {
 #[no_mangle]
 // The entry point for the EFI application(仕様でEFIアプリケーションのエントリポイントはefi_mainとなっている)
 fn efi_main(_image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
-    // // locate_graphics(...)を使ってUEFIのGraphics Output Protocolを取得すし，画面への書き込み情報を得る．
-    // let efi_graphics_output_protocol = locate_graphic_protocol(efi_system_table).unwrap();
-
-    // // VRAM(映像メモリ)へのポインタ作成
-    // // 生のポインタをRustの可変スライスに変換．
-    // let vram_addr = efi_graphics_output_protocol.mode.frame_buffer_base;
-    // let vram_byte_size = efi_graphics_output_protocol.mode.frame_buffer_size;
-    // let vram = unsafe {
-    //     slice::from_raw_parts_mut(vram_addr as *mut u32, vram_byte_size / size_of::<u32>())
-    // };
-
-    // // スライスをループして白色で埋める
-    // for e in vram {
-    //     *e = 0xffffff;
-    // }
-
     let mut vram = init_vram(efi_system_table).expect("init_vram failed");
-    // for y in 0..vram.height {
-    //     for x in 0..vram.width {
-    //         if let Some(pixel) = vram.pixel_at_mut(x, y) {
-    //             unsafe {
-    //                 *pixel = 0x00ff00; // 緑色
-    //             }
-    //         }
-    //     }
-    // }
-
-    // // 画面の1/4を赤色にしてみる
-    // for y in 0..vram.height / 2 {
-    //     for x in 0..vram.width / 2 {
-    //         if let Some(pixel) = vram.pixel_at_mut(x, y) {
-    //             unsafe {
-    //                 *pixel = 0xff0000; // 赤色
-    //             }
-    //         }
-    //     }
-    // }
-
     let vw = vram.width;
     let vh = vram.height;
     fill_rect(&mut vram, 0x000000, 0, 0, vw, vh).expect("fill_rect failed");
@@ -172,20 +135,15 @@ fn efi_main(_image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
         let _ = draw_line(&mut vram, 0xff00ff, cx, cy, rect_size, i);
         let _ = draw_line(&mut vram, 0xffffff, cx, cy, i, rect_size);
     }
-
-    //     for (y, row) in font_a.trim().split('\n').enumerate() {
-    //         for (x, pixel) in row.chars().enumerate() {
-    //             let color = match pixel {
-    //                 '*' => 0xffffff,
-    //                 _ => continue,
-    //             };
-    //             let _ = draw_point(&mut vram, color, x as i64, y as i64);
-    //         }
-    //     }
     for (i, c) in "ABCDEF".chars().enumerate() {
         draw_font_fg(&mut vram, i as i64 * 16 + 256, i as i64 * 16, 0xffffff, c)
     }
-    draw_str_fg(&mut vram, 256,256, 0xffffff, "Hello, world!");
+    draw_str_fg(&mut vram, 256, 256, 0xffffff, "Hello, world!");
+    let mut w = VramTextWriter::new(&mut vram);
+    for i in 0..4 {
+        writeln!(w, "i = {i}").unwrap();
+        // writeln!(w, "i").unwrap();
+    }
     // println!("Hello, world!");
 
     // 画面を保つために無限ループ
@@ -382,5 +340,35 @@ fn draw_font_fg<T: Bitmap>(buf: &mut T, x: i64, y: i64, color: u32, c: char) {
 fn draw_str_fg<T: Bitmap>(buf: &mut T, x: i64, y: i64, color: u32, s: &str) {
     for (i, c) in s.chars().enumerate() {
         draw_font_fg(buf, x + i as i64 * 8, y, color, c);
+    }
+}
+
+struct VramTextWriter<'a> {
+    vram: &'a mut VramBefferInfo,
+    cursor_x: i64,
+    cursor_y: i64,
+}
+impl<'a> VramTextWriter<'a> {
+    fn new(vram: &'a mut VramBefferInfo) -> Self {
+        Self {
+            vram,
+            cursor_x: 0,
+            cursor_y: 0,
+        }
+    }
+}
+
+impl fmt::Write for VramTextWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for c in s.chars() {
+            if c == '\n' {
+                self.cursor_x = 0;
+                self.cursor_y += 16;
+                continue;
+            }
+            draw_font_fg(self.vram, self.cursor_x, self.cursor_y, 0xffffff, c);
+            self.cursor_x += 8;
+        }
+        Ok(())
     }
 }
