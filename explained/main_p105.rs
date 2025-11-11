@@ -622,11 +622,24 @@ fn efi_main(_image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     // Step 3: 取得結果を表示
     writeln!(w, "{status:?}").unwrap();
     
-    // Step 4: 各メモリエントリを順次表示
-    // イテレータパターンを使用してメモリエントリを順次処理
+    // Step 4: 使用可能メモリ（CONVENTIONAL_MEMORY）のみを集計・表示
+    let mut total_memory_pages = 0;
     for e in memory_map.iter() {
-        writeln!(w, "{e:?}").unwrap();
+        // OSが自由に使用可能なメモリのみを対象とする
+        if e.memory_type != EfiMemoryType::CONVENTIONAL_MEMORY {
+            continue;  // CONVENTIONAL_MEMORY以外はスキップ
+        }
+        total_memory_pages += e.number_of_pages;  // ページ数を累積
+        writeln!(w, "{e:?}").unwrap();           // エントリの詳細を表示
     }
+    
+    // Step 5: 合計メモリサイズをMiB単位で計算・表示
+    // ページ数 × 4096バイト ÷ 1024 ÷ 1024 = MiB
+    let total_memory_size_mib = total_memory_pages * 4096 / 1024 / 1024;
+    writeln!(
+        w,
+        "Total: {total_memory_pages} pages = {total_memory_size_mib} MiB",
+    ).unwrap();
     
     // 無限ループで画面を保持
     loop {
