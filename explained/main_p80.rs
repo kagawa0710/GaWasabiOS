@@ -228,15 +228,15 @@ trait Bitmap {
 // ============================================================================
 
 #[derive(Clone, Copy)]
-struct VramBefferInfo {
+struct VramBufferInfo {
     buf: *mut u8,         // VRAM開始アドレス
     width: i64,           // 画面幅
     height: i64,          // 画面高さ
     pixels_per_line: i64, // 1行あたりのピクセル数（widthと異なる場合あり）
 }
 
-// BitmapトレイトをVramBefferInfoに実装
-impl Bitmap for VramBefferInfo {
+// BitmapトレイトをVramBufferInfoに実装
+impl Bitmap for VramBufferInfo {
     fn bytes_per_pixel(&self) -> i64 {
         4  // BGRA = 4バイト/ピクセル
     }
@@ -262,12 +262,12 @@ impl Bitmap for VramBefferInfo {
 // VRAM初期化関数
 // ============================================================================
 
-fn init_vram(efi_system_table: &EfiSystemTable) -> Result<VramBefferInfo> {
+fn init_vram(efi_system_table: &EfiSystemTable) -> Result<VramBufferInfo> {
     // Graphics Output Protocolを取得
     let gp = locate_graphic_protocol(efi_system_table)?;
 
-    // UEFI情報からVramBefferInfo構造体を作成
-    Ok(VramBefferInfo {
+    // UEFI情報からVramBufferInfo構造体を作成
+    Ok(VramBufferInfo {
         buf: gp.mode.frame_buffer_base as *mut u8,
         width: gp.mode.info.horizontal_resolution as i64,
         height: gp.mode.info.vertical_resolution as i64,

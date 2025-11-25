@@ -178,14 +178,14 @@ trait Bitmap {
 // ============================================================================
 
 #[derive(Clone, Copy)]
-struct VramBefferInfo {
+struct VramBufferInfo {
     buf: *mut u8,
     width: i64,
     height: i64,
     pixels_per_line: i64,
 }
 
-impl Bitmap for VramBefferInfo {
+impl Bitmap for VramBufferInfo {
     fn bytes_per_pixel(&self) -> i64 {
         4  // BGRA = 4バイト/ピクセル
     }
@@ -207,9 +207,9 @@ impl Bitmap for VramBefferInfo {
     }
 }
 
-fn init_vram(efi_system_table: &EfiSystemTable) -> Result<VramBefferInfo> {
+fn init_vram(efi_system_table: &EfiSystemTable) -> Result<VramBufferInfo> {
     let gp = locate_graphic_protocol(efi_system_table)?;
-    Ok(VramBefferInfo {
+    Ok(VramBufferInfo {
         buf: gp.mode.frame_buffer_base as *mut u8,
         width: gp.mode.info.horizontal_resolution as i64,
         height: gp.mode.info.vertical_resolution as i64,

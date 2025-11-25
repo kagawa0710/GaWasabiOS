@@ -179,14 +179,14 @@ trait Bitmap {
 }
 
 #[derive(Clone, Copy)]
-struct VramBefferInfo {
+struct VramBufferInfo {
     buf: *mut u8,
     width: i64,
     height: i64,
     pixels_per_line: i64,
 }
 
-impl Bitmap for VramBefferInfo {
+impl Bitmap for VramBufferInfo {
     fn bytes_per_pixel(&self) -> i64 {
         4  // BGRA = 4バイト/ピクセル
     }
@@ -208,9 +208,9 @@ impl Bitmap for VramBefferInfo {
     }
 }
 
-fn init_vram(efi_system_table: &EfiSystemTable) -> Result<VramBefferInfo> {
+fn init_vram(efi_system_table: &EfiSystemTable) -> Result<VramBufferInfo> {
     let gp = locate_graphic_protocol(efi_system_table)?;
-    Ok(VramBefferInfo {
+    Ok(VramBufferInfo {
         buf: gp.mode.frame_buffer_base as *mut u8,
         width: gp.mode.info.horizontal_resolution as i64,
         height: gp.mode.info.vertical_resolution as i64,
@@ -359,7 +359,7 @@ fn draw_str_fg<T: Bitmap>(buf: &mut T, x: i64, y: i64, color: u32, s: &str) {
 /// この構造体は標準的なテキスト書き込みインターフェース（fmt::Write）を
 /// VRAM描画に対応させるためのアダプター
 struct VramTextWriter<'a> {
-    vram: &'a mut VramBefferInfo,    // VRAMへの可変参照
+    vram: &'a mut VramBufferInfo,    // VRAMへの可変参照
     cursor_x: i64,                   // 現在のカーソルX座標（新機能 p97）
     cursor_y: i64,                   // 現在のカーソルY座標（新機能 p97）
 }
@@ -371,7 +371,7 @@ impl<'a> VramTextWriter<'a> {
     /// コンストラクタ
     /// 
     /// VRAMの参照を受け取り、カーソルを原点(0,0)に初期化
-    fn new(vram: &'a mut VramBefferInfo) -> Self {
+    fn new(vram: &'a mut VramBufferInfo) -> Self {
         Self {
             vram,
             cursor_x: 0,    // カーソルX座標を0で初期化
