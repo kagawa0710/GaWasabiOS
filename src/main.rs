@@ -23,6 +23,7 @@ use wasabi::x86::hlt;
 #[no_mangle]
 // The entry point for the EFI application(仕様でEFIアプリケーションのエントリポイントはefi_mainとなっている)
 fn efi_main(_image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
+    let mut sw = SerialPort::new_for_com1();
     let mut vram = init_vram(efi_system_table).expect("init_vram failed");
     let vw = vram.width();
     let vh = vram.height();
