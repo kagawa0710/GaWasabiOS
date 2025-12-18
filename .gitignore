@@ -39,3 +39,6 @@ mnt/
 # Environment files
 .env
 .env.local
+
+# log
+log/*

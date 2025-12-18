@@ -282,7 +282,7 @@ impl fmt::Write for VramTextWriter<'_> {
     }
 }
 
-pub fn exit_from_boot_services(
+pub fn exit_from_efi_boot_services(
     image_handle: EfiHandle,
     efi_system_table: &EfiSystemTable,
     memory_map: &mut MemoryMapHolder,
