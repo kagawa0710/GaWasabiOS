@@ -6,10 +6,13 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::writeln;
+use wasabi::error;
 use wasabi::graphics::draw_test_pattern;
 use wasabi::graphics::fill_rect;
 use wasabi::graphics::Bitmap;
+use wasabi::info;
 use wasabi::init::init_basic_runtime;
+use wasabi::println;
 use wasabi::qemu::exit_qemu;
 use wasabi::qemu::QemuExitCode;
 use wasabi::uefi::init_vram;
@@ -17,12 +20,18 @@ use wasabi::uefi::EfiHandle;
 use wasabi::uefi::EfiMemoryType;
 use wasabi::uefi::EfiSystemTable;
 use wasabi::uefi::VramTextWriter;
+use wasabi::warn;
 use wasabi::x86::hlt;
 
 #[no_mangle]
 // The entry point for the EFI application(仕様でEFIアプリケーションのエントリポイントはefi_mainとなっている)
-fn efi_main(_image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
-    let mut sw = SerialPort::new_for_com1();
+fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
+    println!("Booting WasabiOS...\n");
+    println!("image_handle: {:#018X}\n", image_handle);
+    println!("efi_system_table: {:#p}\n", efi_system_table);
+    info!("info");
+    warn!("warn");
+    error!("error");
     let mut vram = init_vram(efi_system_table).expect("init_vram failed");
     let vw = vram.width();
     let vh = vram.height();
@@ -55,6 +64,7 @@ fn efi_main(_image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
 
 // panic!()が呼ばれたときの処理
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    error!("PANIC: {info:?}");
     exit_qemu(QemuExitCode::Fail);
 }
