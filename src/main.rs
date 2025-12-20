@@ -12,6 +12,7 @@ use wasabi::graphics::fill_rect;
 use wasabi::graphics::Bitmap;
 use wasabi::info;
 use wasabi::init::init_basic_runtime;
+use wasabi::print::hexdump;
 use wasabi::println;
 use wasabi::qemu::exit_qemu;
 use wasabi::qemu::QemuExitCode;
@@ -56,6 +57,18 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     // println!("Hello, world!");
 
     writeln!(w, "Hello, Non-UEFI world!").unwrap();
+
+    let cr3 = wasabi::x86::read_cr3();
+    println!("cr3 = {cr3:#p}");
+    let t = Some(unsafe { &*cr3 });
+    println!("{t:?}");
+    let t = t.and_then(|t| t.next_level(0));
+    println!("{t:?}");
+    let t = t.and_then(|t| t.next_level(0));
+    println!("{t:?}");
+    let t = t.and_then(|t| t.next_level(0));
+    println!("{t:?}");
+
     // 画面を保つために無限ループ
     loop {
         hlt()
