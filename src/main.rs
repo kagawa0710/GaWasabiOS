@@ -12,6 +12,7 @@ use wasabi::graphics::fill_rect;
 use wasabi::graphics::Bitmap;
 use wasabi::info;
 use wasabi::init::init_basic_runtime;
+use wasabi::init::init_paging;
 // use wasabi::print::hexdump;
 use wasabi::println;
 use wasabi::qemu::exit_qemu;
@@ -23,9 +24,12 @@ use wasabi::uefi::EfiMemoryType;
 use wasabi::uefi::EfiSystemTable;
 use wasabi::uefi::VramTextWriter;
 use wasabi::warn;
+use wasabi::x86::flush_tlb;
 use wasabi::x86::hlt;
 use wasabi::x86::init_exceptions;
+use wasabi::x86::read_cr3;
 use wasabi::x86::trigger_debug_interrupt;
+use wasabi::x86::PageAttr;
 
 #[no_mangle]
 // The entry point for the EFI application(仕様でEFIアプリケーションのエントリポイントはefi_mainとなっている)
@@ -80,6 +84,27 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     let (_gdt, _idt) = init_exceptions();
     info!("Exception initialized!");
     trigger_debug_interrupt();
+    info!("Execution continued.");
+    init_paging(&memory_map);
+    info!("Now we are using our own page tables!");
+
+    init_paging(&memory_map);
+    info!("Now we are using our own page tables!");
+
+    // Unmap page 0 to detect null ptr dereference
+    let page_table = read_cr3();
+    unsafe {
+        (*page_table)
+            .create_mapping(0, 4096, 0, PageAttr::NotPresent)
+            .expect("Failed to unmap page 0");
+    }
+    flush_tlb();
+    // info!("Reading from memory address 0... (again)");
+    // #[allow(clippy::zero_ptr)]
+    // #[allow(deref_nullptr)]
+    // let value_at_zero = unsafe { *(0 as *const u8) };
+    // info!("value_at_zero = {value_at_zero}");
+
     loop {
         hlt()
     }
