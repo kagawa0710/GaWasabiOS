@@ -7,7 +7,8 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::writeln;
 use wasabi::error;
-use wasabi::executor::block_on;
+use wasabi::executor::Executor;
+use wasabi::executor::Task;
 use wasabi::graphics::draw_test_pattern;
 use wasabi::graphics::fill_rect;
 use wasabi::graphics::Bitmap;
@@ -26,7 +27,6 @@ use wasabi::uefi::EfiSystemTable;
 use wasabi::uefi::VramTextWriter;
 use wasabi::warn;
 use wasabi::x86::flush_tlb;
-use wasabi::x86::hlt;
 use wasabi::x86::init_exceptions;
 use wasabi::x86::read_cr3;
 use wasabi::x86::trigger_debug_interrupt;
@@ -100,21 +100,27 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
             .expect("Failed to unmap page 0");
     }
     flush_tlb();
-    // info!("Reading from memory address 0... (again)");
-    // #[allow(clippy::zero_ptr)]
-    // #[allow(deref_nullptr)]
-    // let value_at_zero = unsafe { *(0 as *const u8) };
-    // info!("value_at_zero = {value_at_zero}");
 
-    let result = block_on(async {
-        info!("Hello from the async world!");
+    // let task = Task::new(async {
+    //     info!("Hello from the async world!");
+    //     Ok(())
+    // });
+    let task1 = Task::new(async {
+        for i in 100..=103 {
+            info!("{i}");
+        }
         Ok(())
     });
-    info!("block_on completed! result = {result:?}");
-
-    loop {
-        hlt()
-    }
+    let task2 = Task::new(async {
+        for i in 200..=203 {
+            info!("{i}");
+        }
+        Ok(())
+    }); 
+    let mut executor = Executor::new();
+    executor.enqueue(task1);
+    executor.enqueue(task2);
+    Executor::run(executor)
 }
 
 // panic!()が呼ばれたときの処理
