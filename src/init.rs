@@ -13,18 +13,12 @@ use crate::x86::PML4;
 use alloc::boxed::Box;
 use core::cmp::max;
 
-
-
 pub fn init_basic_runtime(
     image_handle: EfiHandle,
     efi_system_table: &EfiSystemTable,
 ) -> MemoryMapHolder {
     let mut memory_map = MemoryMapHolder::new();
-    exit_from_efi_boot_services(
-        image_handle,
-        efi_system_table,
-        &mut memory_map,
-    );
+    exit_from_efi_boot_services(image_handle, efi_system_table, &mut memory_map);
     ALLOCATOR.init_with_mmap(&memory_map);
     memory_map
 }
@@ -37,8 +31,7 @@ pub fn init_paging(memory_map: &MemoryMapHolder) {
             CONVENTIONAL_MEMORY | LOADER_CODE | LOADER_DATA => {
                 end_of_mem = max(
                     end_of_mem,
-                    e.physical_start()
-                        + e.number_of_pages() * (PAGE_SIZE as u64),
+                    e.physical_start() + e.number_of_pages() * (PAGE_SIZE as u64),
                 );
             }
             _ => (),

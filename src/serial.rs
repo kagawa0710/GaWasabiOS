@@ -18,22 +18,22 @@ impl SerialPort {
     }
     pub fn init(&mut self) {
         // Disable all interrupts
-        write_io_port_u8(self.base +1, 0x00);
+        write_io_port_u8(self.base + 1, 0x00);
         // Enable DLAB (set baud rate divisor)
-        write_io_port_u8(self.base +3, 0x80);
+        write_io_port_u8(self.base + 3, 0x80);
         // baud rate = (115200 / BAUD_DIVISOR)
         const BAUD_DIVISOR: u16 = 0x0001;
         write_io_port_u8(self.base, (BAUD_DIVISOR & 0xff) as u8);
-        write_io_port_u8(self.base +1, (BAUD_DIVISOR >> 8) as u8);
+        write_io_port_u8(self.base + 1, (BAUD_DIVISOR >> 8) as u8);
         // 8 bits, no parity, one stop bit
-        write_io_port_u8(self.base +3, 0x03);
+        write_io_port_u8(self.base + 3, 0x03);
         // Enable FIFO, clear them, with 14-byte threshold
-        write_io_port_u8(self.base +2, 0xc7);
+        write_io_port_u8(self.base + 2, 0xc7);
         // IRQs enabled, RTS/DSR set
-        write_io_port_u8(self.base +4, 0x0b);
+        write_io_port_u8(self.base + 4, 0x0b);
     }
     pub fn send_char(&self, c: char) {
-        while (read_io_port_u8(self.base +5) & 0x20) == 0 {
+        while (read_io_port_u8(self.base + 5) & 0x20) == 0 {
             busy_loop_hint();
         }
         write_io_port_u8(self.base, c as u8);

@@ -154,8 +154,7 @@ pub struct EfiBootServicesTable {
         interface: *mut *mut EfiVoid,
     ) -> EfiStatus,
     _reserved1: [u64; 9],
-    exit_boot_services:
-        extern "win64" fn(image_handle: EfiHandle, map_key: usize) -> EfiStatus,
+    exit_boot_services: extern "win64" fn(image_handle: EfiHandle, map_key: usize) -> EfiStatus,
     _reserved3: [u64; 10],
     locate_protocol: extern "win64" fn(
         protocol: *const EfiGuid,
@@ -185,7 +184,6 @@ pub struct EfiConfigurationTable {
     pub vendor_table: *const u8,
 }
 
-
 #[repr(C)]
 pub struct EfiSystemTable {
     _reserved0: [u64; 12],
@@ -198,12 +196,9 @@ impl EfiSystemTable {
     pub fn boot_services(&self) -> &EfiBootServicesTable {
         self.boot_services
     }
-    fn lookup_config_table(
-        &self,
-        guid: &EfiGuid,
-    ) -> Option<EfiConfigurationTable> {
+    fn lookup_config_table(&self, guid: &EfiGuid) -> Option<EfiConfigurationTable> {
         for i in 0..self.number_of_table_entries {
-            let ct = unsafe { &*self.configuration_table.add(i)};
+            let ct = unsafe { &*self.configuration_table.add(i) };
             if ct.vendor_guid == *guid {
                 return Some(*ct);
             }
@@ -212,7 +207,7 @@ impl EfiSystemTable {
     }
     pub fn acpi_table(&self) -> Option<&'static AcpiRsdpStruct> {
         self.lookup_config_table(&EFI_ACPI_TABLE_GUID)
-            .map(|t| unsafe {&*(t.vendor_table as *const AcpiRsdpStruct)})
+            .map(|t| unsafe { &*(t.vendor_table as *const AcpiRsdpStruct) })
     }
 }
 
@@ -274,8 +269,7 @@ pub fn locate_loaded_image_protocol(
     let status = (efi_system_table.boot_services.handle_protocol)(
         image_handle,
         &EFI_LOADED_IMAGE_PROTOCOL_GUID,
-        &mut graphics_output_protocol as *mut *mut EfiLoadedImageProtocol
-            as *mut *mut EfiVoid,
+        &mut graphics_output_protocol as *mut *mut EfiLoadedImageProtocol as *mut *mut EfiVoid,
     );
     if status != EfiStatus::Success {
         return Err("Failed to locate graphics output protocol");
@@ -358,10 +352,8 @@ pub fn exit_from_efi_boot_services(
     loop {
         let status = efi_system_table.boot_services.get_memory_map(memory_map);
         assert_eq!(status, EfiStatus::Success);
-        let status = (efi_system_table.boot_services.exit_boot_services)(
-            image_handle,
-            memory_map.map_key,
-        );
+        let status =
+            (efi_system_table.boot_services.exit_boot_services)(image_handle, memory_map.map_key);
         if status == EfiStatus::Success {
             break;
         }

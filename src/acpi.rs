@@ -29,7 +29,7 @@ struct XsdtIterator<'a> {
 
 impl<'a> XsdtIterator<'a> {
     pub fn new(table: &'a Xsdt) -> Self {
-        XsdtIterator {table, index: 0}
+        XsdtIterator { table, index: 0 }
     }
 }
 impl<'a> Iterator for XsdtIterator<'a> {
@@ -43,8 +43,7 @@ impl<'a> Iterator for XsdtIterator<'a> {
         } else {
             self.index += 1;
             Some(unsafe {
-                &*(self.table.entry(self.index - 1)
-                    as *const SystemDescriptionTableHeader)
+                &*(self.table.entry(self.index - 1) as *const SystemDescriptionTableHeader)
             })
         }
     }
@@ -57,22 +56,17 @@ struct Xsdt {
 const _: () = assert!(size_of::<Xsdt>() == 36);
 
 impl Xsdt {
-    fn find_table(
-        &self,
-        sig: &'static [u8; 4],
-    ) -> Option<&'static SystemDescriptionTableHeader> {
+    fn find_table(&self, sig: &'static [u8; 4]) -> Option<&'static SystemDescriptionTableHeader> {
         self.iter().find(|&e| e.signature() == sig)
     }
     fn header_size(&self) -> usize {
         size_of::<Self>()
     }
     fn num_of_entries(&self) -> usize {
-        (self.header.length as usize - self.header_size())
-            / size_of::<*const u8>()
+        (self.header.length as usize - self.header_size()) / size_of::<*const u8>()
     }
     unsafe fn entry(&self, index: usize) -> *const u8 {
-        ((self as *const Self as *const u8).add(self.header_size())
-            as *const *const u8)
+        ((self as *const Self as *const u8).add(self.header_size()) as *const *const u8)
             .add(index)
             .read_unaligned()
     }
@@ -88,10 +82,8 @@ trait AcpiTable {
         header.expect_signature(Self::SIGNATURE);
         // This is safe as far as phys_addr points to a valid MCFG table and it
         // alives forever.
-        let mcfg: &Self::Table = unsafe {
-            &*(header as *const SystemDescriptionTableHeader
-                as *const Self::Table)
-        };
+        let mcfg: &Self::Table =
+            unsafe { &*(header as *const SystemDescriptionTableHeader as *const Self::Table) };
         mcfg
     }
 }
@@ -148,7 +140,7 @@ pub struct AcpiRsdpStruct {
 }
 impl AcpiRsdpStruct {
     fn xsdt(&self) -> &Xsdt {
-        unsafe { &*(self.xsdt as *const Xsdt)}
+        unsafe { &*(self.xsdt as *const Xsdt) }
     }
     pub fn hpet(&self) -> Option<&AcpiHpetDescriptor> {
         let xsdt = self.xsdt();

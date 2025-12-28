@@ -39,8 +39,7 @@ pub struct Hpet {
 impl Hpet {
     pub fn new(registers: &'static mut HpetRegisters) -> Self {
         let fs_per_count = registers.capabilities_and_id >> 32;
-        let num_of_timers =
-            ((registers.capabilities_and_id >> 8) & 0b11111) as usize + 1;
+        let num_of_timers = ((registers.capabilities_and_id >> 8) & 0b11111) as usize + 1;
         let freq = 1_000_000_000_000_000 / fs_per_count;
         let mut hpet = Self {
             registers,
@@ -51,8 +50,7 @@ impl Hpet {
             hpet.globally_disable();
             for i in 0..hpet.num_of_timers {
                 let timer = &mut hpet.registers.timers[i];
-                let mut config =
-                    read_volatile(&timer.configration_and_capability);
+                let mut config = read_volatile(&timer.configration_and_capability);
                 config &= !(TIMER_CONFIG_INT_ENABLE
                     | TIMER_CONFIG_USE_PERIODIC_MODE
                     | TIMER_CONFIG_LEVEL_TRIGGER
@@ -73,7 +71,7 @@ impl Hpet {
         write_volatile(&mut self.registers.configuration, config);
     }
     pub fn main_counter(&self) -> u64 {
-        unsafe { read_volatile(&self.registers.main_counter_value)}
+        unsafe { read_volatile(&self.registers.main_counter_value) }
     }
     pub fn freq(&self) -> u64 {
         self.freq

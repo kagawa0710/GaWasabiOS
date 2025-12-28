@@ -3,14 +3,14 @@ use crate::info;
 use crate::result::Result;
 use crate::x86::busy_loop_hint;
 use alloc::boxed::Box;
-use core::fmt::Debug;
 use alloc::collections::VecDeque;
+use core::fmt::Debug;
 use core::future::Future;
 use core::panic::Location;
 use core::pin::Pin;
+use core::ptr::null;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
-use core::ptr::null;
 use core::task::Context;
 use core::task::Poll;
 use core::task::RawWaker;
@@ -55,15 +55,15 @@ pub fn no_op_waker() -> Waker {
     unsafe { Waker::from_raw(no_op_raw_waker()) }
 }
 
-pub fn block_on<T>(
-    future: impl Future<Output = Result<T>> + 'static,
-) -> Result<T> {
+pub fn block_on<T>(future: impl Future<Output = Result<T>> + 'static) -> Result<T> {
     let mut task = Task::new(future);
     loop {
         let waker = no_op_waker();
         let mut context = Context::from_waker(&waker);
         match task.poll(&mut context) {
-            Poll::Ready(result) => {break result;}
+            Poll::Ready(result) => {
+                break result;
+            }
             Poll::Pending => busy_loop_hint(),
         }
     }
@@ -116,7 +116,7 @@ pub struct Yield {
 }
 impl Future for Yield {
     type Output = ();
-    fn poll(self: Pin<&mut Self>, _: &mut Context) ->  Poll<()> {
+    fn poll(self: Pin<&mut Self>, _: &mut Context) -> Poll<()> {
         if self.polled.fetch_or(true, Ordering::SeqCst) {
             Poll::Ready(())
         } else {

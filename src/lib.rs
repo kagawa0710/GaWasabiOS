@@ -22,10 +22,7 @@ pub mod test_runner;
 
 #[cfg(test)]
 #[no_mangle]
-pub fn efi_main(
-    image_handle: uefi::EfiHandle,
-    efi_system_table: &uefi::EfiSystemTable,
-){
+pub fn efi_main(image_handle: uefi::EfiHandle, efi_system_table: &uefi::EfiSystemTable) {
     init::init_basic_runtime(image_handle, efi_system_table);
     run_unit_tests()
 }

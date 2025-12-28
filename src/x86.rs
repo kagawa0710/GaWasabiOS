@@ -115,8 +115,7 @@ fn correctly_round_up_to_page_size_multiple() {
 pub enum PageAttr {
     NotPresent = 0,
     ReadWriteKernel = ATTR_PRESENT | ATTR_WRITABLE,
-    ReadWriteIo =
-        ATTR_PRESENT | ATTR_WRITABLE | ATTR_WRITE_THROUGH | ATTR_CACHE_DISABLE,
+    ReadWriteIo = ATTR_PRESENT | ATTR_WRITABLE | ATTR_WRITE_THROUGH | ATTR_CACHE_DISABLE,
 }
 #[derive(Debug, Eq, PartialEq)]
 pub enum TranslationResult {
@@ -182,10 +181,8 @@ impl<const LEVEL: usize, NEXT> Entry<LEVEL, NEXT> {
         if self.is_present() {
             Err("Page is already populated")
         } else {
-            let next: Box<NEXT> =
-                Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
-            self.value =
-                Box::into_raw(next) as u64 | PageAttr::ReadWriteKernel as u64;
+            let next: Box<NEXT> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+            self.value = Box::into_raw(next) as u64 | PageAttr::ReadWriteKernel as u64;
             Ok(self)
         }
     }
@@ -267,12 +264,10 @@ impl PML4 {
             let table = table.entry[index].ensure_populated()?.table_mut()?;
             loop {
                 let index = table.calc_index(addr);
-                let table =
-                    table.entry[index].ensure_populated()?.table_mut()?;
+                let table = table.entry[index].ensure_populated()?.table_mut()?;
                 loop {
                     let index = table.calc_index(addr);
-                    let table =
-                        table.entry[index].ensure_populated()?.table_mut()?;
+                    let table = table.entry[index].ensure_populated()?.table_mut()?;
                     loop {
                         let index = table.calc_index(addr);
                         let pte = &mut table.entry[index];
@@ -852,8 +847,7 @@ pub const BIT_DPL3: u64 = 3u64 << 45;
 
 #[repr(u64)]
 enum GdtAttr {
-    KernelCode =
-        BIT_TYPE_CODE | BIT_PRESENT | BIT_CS_LONG_MODE | BIT_CS_READABLE,
+    KernelCode = BIT_TYPE_CODE | BIT_PRESENT | BIT_CS_LONG_MODE | BIT_CS_READABLE,
     KernelData = BIT_TYPE_DATA | BIT_PRESENT | BIT_DS_WRITABLE,
 }
 
@@ -911,9 +905,7 @@ impl Default for GdtWrapper {
             null_segment: GdtSegmentDescriptor::null(),
             kernel_code_segment: GdtSegmentDescriptor::new(GdtAttr::KernelCode),
             kernel_data_segment: GdtSegmentDescriptor::new(GdtAttr::KernelData),
-            task_state_segment: TaskStateSegment64Descriptor::new(
-                tss64.phys_addr(),
-            ),
+            task_state_segment: TaskStateSegment64Descriptor::new(tss64.phys_addr()),
         };
         let gdt = Box::pin(gdt);
         GdtWrapper { inner: gdt, tss64 }

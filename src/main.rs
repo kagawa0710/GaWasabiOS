@@ -34,15 +34,16 @@ use wasabi::x86::read_cr3;
 use wasabi::x86::trigger_debug_interrupt;
 use wasabi::x86::PageAttr;
 
+static mut GLOBAL_HPET: Option<Hpet> = None;
+
 #[no_mangle]
 // The entry point for the EFI application(仕様でEFIアプリケーションのエントリポイントはefi_mainとなっている)
 fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     println!("Booting WasabiOS...\n");
     println!("image_handle: {:#018X}\n", image_handle);
     println!("efi_system_table: {:#p}\n", efi_system_table);
-    let loaded_image_protocol =
-        locate_loaded_image_protocol(image_handle, efi_system_table)
-            .expect("Failed to get LoadedImageProtocol");
+    let loaded_image_protocol = locate_loaded_image_protocol(image_handle, efi_system_table)
+        .expect("Failed to get LoadedImageProtocol");
     println!("image_base: {:#018X}", loaded_image_protocol.image_base);
     println!("image_size: {:#018X}\n", loaded_image_protocol.image_size);
     info!("info");
@@ -55,8 +56,6 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     draw_test_pattern(&mut vram);
     let mut w = VramTextWriter::new(&mut vram);
     let acpi = efi_system_table.acpi_table().expect("ACPI table not found");
-
-
 
     let memory_map = init_basic_runtime(image_handle, efi_system_table);
     let mut total_memory_pages = 0;
@@ -118,7 +117,8 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
 
     info!("HPET is at {hpet:#p}");
     let hpet = Hpet::new(hpet);
-    let task1 = Task::new(async move {
+    let hpet = unsafe { GLOBAL_HPET.insert(hpet) };
+    let task1 = Task::new(async {
         for i in 100..=103 {
             info!("{i} hpet.main_counter = {}", hpet.main_counter());
             yield_execution().await;
@@ -127,11 +127,11 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     });
     let task2 = Task::new(async {
         for i in 200..=203 {
-            info!("{i}");
+            info!("{i} hpet.main_counter = {}", hpet.main_counter());
             yield_execution().await;
-        }  
+        }
         Ok(())
-    }); 
+    });
     let mut executor = Executor::new();
     executor.enqueue(task1);
     executor.enqueue(task2);

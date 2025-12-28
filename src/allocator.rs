@@ -53,8 +53,7 @@ const _: () = assert!(HEADER_SIZE == 32);
 // Size of Header should be power of 2
 const _: () = assert!(HEADER_SIZE.count_ones() == 1);
 
-pub const LAYOUT_PAGE_4K: Layout =
-    unsafe { Layout::from_size_align_unchecked(4096, 4096) };
+pub const LAYOUT_PAGE_4K: Layout = unsafe { Layout::from_size_align_unchecked(4096, 4096) };
 
 impl Header {
     fn can_provide(&self, size: usize, align: usize) -> bool {
@@ -62,15 +61,15 @@ impl Header {
         // HEADER_SIZE * 2 => one for allocated region, another for padding.
         self.size >= size + HEADER_SIZE * 2 + align
     }
-    
+
     fn is_allocated(&self) -> bool {
         self.is_allocated
     }
-    
+
     fn end_addr(&self) -> usize {
         self as *const Header as usize + self.size
     }
-    
+
     unsafe fn new_from_addr(addr: usize) -> Box<Header> {
         let header = addr as *mut Header;
         header.write(Header {
@@ -81,12 +80,12 @@ impl Header {
         });
         Box::from_raw(addr as *mut Header)
     }
-    
+
     unsafe fn from_allocated_region(addr: *mut u8) -> Box<Header> {
         let header = addr.sub(HEADER_SIZE) as *mut Header;
         Box::from_raw(header)
     }
-    
+
     //
     // Note: std::alloc::Layout doc says:
     // > All layouts have an associated size and a power-of-two alignment.
@@ -110,7 +109,7 @@ impl Header {
             //
             // header_for_allocated.end_addr() self has enough space
             // to allocate the requested object.
-            
+
             // Make a Header for the allocated object
             let mut size_used = 0;
             let allocated_addr = (self.end_addr() - size) & !(align - 1);
@@ -122,15 +121,12 @@ impl Header {
             header_for_allocated.next_header = self.next_header.take();
             if header_for_allocated.end_addr() != self.end_addr() {
                 // Make a Header for padding
-                let mut header_for_padding = unsafe {
-                    Self::new_from_addr(header_for_allocated.end_addr())
-                };
+                let mut header_for_padding =
+                    unsafe { Self::new_from_addr(header_for_allocated.end_addr()) };
                 header_for_padding.is_allocated = false;
-                header_for_padding.size =
-                    self.end_addr() - header_for_allocated.end_addr();
+                header_for_padding.size = self.end_addr() - header_for_allocated.end_addr();
                 size_used += header_for_padding.size;
-                header_for_padding.next_header =
-                    header_for_allocated.next_header.take();
+                header_for_padding.next_header = header_for_allocated.next_header.take();
                 header_for_allocated.next_header = Some(header_for_padding);
             }
             // Shrink self
@@ -175,7 +171,7 @@ unsafe impl GlobalAlloc for FirstFitAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.alloc_with_options(layout)
     }
-    
+
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         let mut region = Header::from_allocated_region(ptr);
         region.is_allocated = false;
@@ -203,7 +199,7 @@ impl FirstFitAllocator {
             }
         }
     }
-    
+
     pub fn init_with_mmap(&self, memory_map: &MemoryMapHolder) {
         for e in memory_map.iter() {
             if e.memory_type() != EfiMemoryType::CONVENTIONAL_MEMORY {
@@ -212,7 +208,7 @@ impl FirstFitAllocator {
             self.add_free_from_descriptor(e);
         }
     }
-    
+
     fn add_free_from_descriptor(&self, desc: &EfiMemoryDescriptor) {
         let mut start_addr = desc.physical_start() as usize;
         let mut size = desc.number_of_pages() as usize * 4096;
@@ -257,7 +253,7 @@ mod test {
     #[test_case]
     fn malloc_aligin() {
         let mut pointers = [null_mut::<u8>(); 100];
-        for align in[1, 2, 4, 8, 16, 32, 4096] {
+        for align in [1, 2, 4, 8, 16, 32, 4096] {
             for e in pointers.iter_mut() {
                 *e = ALLOCATOR.alloc_with_options(
                     Layout::from_size_align(1234, align).expect("Failed to create Layout"),
@@ -341,7 +337,7 @@ mod test {
             .step_by(2)
         {
             let (_, (layout, pointer)) = e;
-            unsafe { ALLOCATOR.dealloc(*pointer, *layout)}
+            unsafe { ALLOCATOR.dealloc(*pointer, *layout) }
         }
         for e in allocations
             .iter()
@@ -361,15 +357,15 @@ mod test {
             .step_by(2)
         {
             let (i, (layout, pointer)) = e;
-           *pointer = ALLOCATOR.alloc_with_options(*layout);
+            *pointer = ALLOCATOR.alloc_with_options(*layout);
             for k in 0..layout.size() {
                 unsafe { *pointer.add(k) = i as u8 }
             }
         }
         for e in allocations.iter().zip(pointers.iter_mut()).enumerate() {
-            let(i, (layout, pointer)) = e;
+            let (i, (layout, pointer)) = e;
             for k in 0..layout.size() {
-                assert!(unsafe {*pointer.add(k)} == i as u8);
+                assert!(unsafe { *pointer.add(k) } == i as u8);
             }
         }
     }
