@@ -86,8 +86,7 @@ pub fn set_global_hpet(hpet: Hpet) {
 }
 pub fn global_timestamp() -> Duration {
     if let Some(hpet) = &*HPET.lock() {
-        let ns =
-            hpet.main_counter() as u128 * 1_000_000_000 / hpet.freq() as u128;
+        let ns = hpet.main_counter() as u128 * 1_000_000_000 / hpet.freq() as u128;
         Duration::from_nanos(ns as u64)
     } else {
         Duration::ZERO
