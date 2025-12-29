@@ -5,21 +5,20 @@
 // インラインアセンブリを使うための宣言
 use core::fmt::Write;
 use core::panic::PanicInfo;
+use core::time::Duration;
 use core::writeln;
 use wasabi::error;
-use wasabi::executor::yield_execution;
 use wasabi::executor::Executor;
 use wasabi::executor::Task;
+use wasabi::executor::TimeoutFuture;
 use wasabi::graphics::draw_test_pattern;
 use wasabi::graphics::fill_rect;
 use wasabi::graphics::Bitmap;
 use wasabi::hpet::global_timestamp;
-use wasabi::hpet::set_global_hpet;
-use wasabi::hpet::Hpet;
 use wasabi::info;
 use wasabi::init::init_basic_runtime;
+use wasabi::init::init_hpet;
 use wasabi::init::init_paging;
-// use wasabi::print::hexdump;
 use wasabi::println;
 use wasabi::qemu::exit_qemu;
 use wasabi::qemu::QemuExitCode;
@@ -106,30 +105,19 @@ fn efi_main(image_handle: EfiHandle, efi_system_table: &EfiSystemTable) {
     }
     flush_tlb();
 
-    // let task = Task::new(async {
-    //     info!("Hello from the async world!");
-    //     Ok(())
-    // });
-    let hpet = acpi.hpet().expect("Failed to get HPET from ACPI");
-    let hpet = hpet
-        .base_address()
-        .expect("Failed to get HPET base address");
-
-    info!("HPET is at {hpet:#p}");
-    let hpet = Hpet::new(hpet);
-    set_global_hpet(hpet);
+    init_hpet(acpi);
     let t0 = global_timestamp();
     let task1 = Task::new(async move {
         for i in 100..=103 {
             info!("{i} hpet.main_counter = {:?}", global_timestamp() -t0);
-            yield_execution().await;
+            TimeoutFuture::new(Duration::from_secs(1)).await;
         }
         Ok(())
     });
     let task2 = Task::new(async move {
         for i in 200..=203 {
             info!("{i} hpet.main_counter = {:?}", global_timestamp() - t0);
-            yield_execution().await;
+            TimeoutFuture::new(Duration::from_secs(2)).await;
         }
         Ok(())
     });
