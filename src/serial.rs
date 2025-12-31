@@ -34,15 +34,15 @@ impl SerialPort {
         write_io_port_u8(self.base + 4, 0x0b);
     }
     pub fn loopback_test(&self) -> Result<()> {
-            // Set in loopback mode
-            write_io_port_u8(self.base + 4, 0x1e);
-            self.send_char('T');
-            if self.try_read().ok_or("loopback_test failed: No response")? != b'T' {
-                return Err("loopback_test failed: wrong data received");
-            }
-            // Return to the nomal mode
-            write_io_port_u8(self.base + 4, 0x0f);
-            Ok(())
+        // Set in loopback mode
+        write_io_port_u8(self.base + 4, 0x1e);
+        self.send_char('T');
+        if self.try_read().ok_or("loopback_test failed: No response")? != b'T' {
+            return Err("loopback_test failed: wrong data received");
+        }
+        // Return to the nomal mode
+        write_io_port_u8(self.base + 4, 0x0f);
+        Ok(())
     }
     pub fn send_char(&self, c: char) {
         while (read_io_port_u8(self.base + 5) & 0x20) == 0 {
