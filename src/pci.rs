@@ -1,6 +1,8 @@
 use crate::acpi::AcpiMcfgDescriptor;
+use crate::error;
 use crate::info;
 use crate::result::Result;
+use crate::xhci::PciXhciDriver;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem::size_of;
@@ -149,6 +151,9 @@ impl Pci {
         for bdf in BusDeviceFunction::iter() {
             if let Some(vd) = self.read_vendor_id_and_device_id(bdf) {
                 info!("{vd}");
+                if PciXhciDriver::supports(vd) {
+                    PciXhciDriver::attach(bdf)
+                }
             }
         }
     }
