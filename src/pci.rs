@@ -119,13 +119,10 @@ impl<T> ConfigRegisters<T> {
         }
     }
     fn write(ecm_base: *mut T, byte_offset: usize, data: T) -> Result<()> {
-        if !(0..256).contains(&byte_offset) || byte_offset % size_of::<T>() != 0
-        {
+        if !(0..256).contains(&byte_offset) || byte_offset % size_of::<T>() != 0 {
             Err("PCI ConfigRegisters write out of range")
         } else {
-            unsafe {
-                write_volatile(ecm_base.add(byte_offset / size_of::<T>()), data)
-            }
+            unsafe { write_volatile(ecm_base.add(byte_offset / size_of::<T>()), data) }
             Ok(())
         }
     }
@@ -175,11 +172,7 @@ impl Pci {
             }
         }
     }
-    pub fn read_register_u32(
-        &self,
-        bdf: BusDeviceFunction,
-        byte_offset: usize,
-    ) -> Result<u32> {
+    pub fn read_register_u32(&self, bdf: BusDeviceFunction, byte_offset: usize) -> Result<u32> {
         ConfigRegisters::read(self.ecm_base(bdf), byte_offset)
     }
     pub fn write_register_u32(
@@ -190,11 +183,7 @@ impl Pci {
     ) -> Result<()> {
         ConfigRegisters::write(self.ecm_base(bdf), byte_offset, data)
     }
-    pub fn read_register_u64(
-        &self,
-        bdf: BusDeviceFunction,
-        byte_offset: usize,
-    ) -> Result<u64> {
+    pub fn read_register_u64(&self, bdf: BusDeviceFunction, byte_offset: usize) -> Result<u64> {
         let lo = self.read_register_u32(bdf, byte_offset)?;
         let hi = self.read_register_u32(bdf, byte_offset + 4)?;
         Ok(((hi as u64) << 32) | (lo as u64))
@@ -203,7 +192,7 @@ impl Pci {
         &self,
         bdf: BusDeviceFunction,
         byte_offset: usize,
-        data: u64,  
+        data: u64,
     ) -> Result<()> {
         let lo: u32 = data as u32;
         let hi: u32 = (data >> 32) as u32;
@@ -222,18 +211,13 @@ impl Pci {
             let size = 1 + !(self.read_register_u64(bdf, 0x10)? & !0b1111);
             // Restore the original value
             self.write_register_u64(bdf, 0x10, bar0)?;
-            Ok(BarMem64 {addr, size})
+            Ok(BarMem64 { addr, size })
         } else {
             Err("Unexpected BAR0 Type")
         }
     }
-    pub fn set_command_and_status_flags(
-        &self,
-        bdf: BusDeviceFunction,
-        flags: u32,
-    ) -> Result<()> {
-        let cmd_and_status =
-            self.read_register_u32(bdf, 0x04 /* Command and status */)?;
+    pub fn set_command_and_status_flags(&self, bdf: BusDeviceFunction, flags: u32) -> Result<()> {
+        let cmd_and_status = self.read_register_u32(bdf, 0x04 /* Command and status */)?;
         self.write_register_u32(
             bdf,
             0x04, /* Command and status */
@@ -241,16 +225,10 @@ impl Pci {
         )
     }
     pub fn enable_bus_master(&self, bdf: BusDeviceFunction) -> Result<()> {
-        self.set_command_and_status_flags(
-            bdf,
-            1 << 2, /* Bus Master Enable */
-        )
+        self.set_command_and_status_flags(bdf, 1 << 2 /* Bus Master Enable */)
     }
     pub fn disable_interrupt(&self, bdf: BusDeviceFunction) -> Result<()> {
-        self.set_command_and_status_flags(
-            bdf,
-            1 << 10, /* Interrupt Disable */
-        )
+        self.set_command_and_status_flags(bdf, 1 << 10 /* Interrupt Disable */)
     }
 }
 pub struct BarMem64 {
