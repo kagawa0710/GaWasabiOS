@@ -1,4 +1,4 @@
-# p399 - Enable Slot Command（スロット割り当て）
+# p404 - Enable Slot Command（スロット割り当て）
 
 ## 前回（p398）からの追加
 
