@@ -142,7 +142,9 @@ impl OperationalRegisters {
         }
     }
     fn set_cmd_ring_ctrl(&mut self, ring: &CommandRing) {
-        self.crcr.write(ring.ring_phys_addr() | 1 /* Consumer Ring Cycle State */)
+        self.crcr.write(
+            ring.ring_phys_addr() | 1, /* Consumer Ring Cycle State */
+        )
     }
     fn set_dcbaa_ptr(&mut self, dcbaa: &mut DeviceContextBaseAddressArray) -> Result<()> {
         self.dcbaap.write(dcbaa.inner_mut_ptr());
@@ -254,6 +256,38 @@ impl PortScEntry {
     fn ccs(&self) -> bool {
         // CCS - Current Connect Status - ROS
         self.bit(0)
+    }
+    fn assert_bit(&self, pos: usize) {
+        const PRESERVE_MASK: u32 = 0b01001111000000011111111111101001;
+        let portsc = self.ptr.lock();
+        let old = unsafe { read_volatile(*portsc) };
+        unsafe { write_volatile(*portsc, (old & PRESERVE_MASK) | (1 << pos)) }
+    }
+    fn pp(&self) -> bool {
+        // PP - Port Power - RWS
+        self.bit(9)
+    }
+    fn assert_pp(&self) {
+        // pp - Port Power -RWS
+        self.assert_bit(9)
+    }
+    pub fn pr(&self) -> bool {
+        // PR - Port Reset - RW1S
+        self.bit(4)
+    }
+    pub fn assert_pr(&self) {
+        // PR - Port Reset - RW1S
+        self.assert_bit(4)
+    }
+    pub async fn reset_port(&self) {
+        self.assert_pp();
+        while !self.pp() {
+            yield_execution().await
+        }
+        self.assert_pr();
+        while self.pr() {
+            yield_execution().await
+        }
     }
 }
 
@@ -410,7 +444,11 @@ impl GenericTrbEntry {
     }
     fn set_toggle_cycle(&mut self, value: bool) {
         let ctrl = self.control.read();
-        let ctrl = if value { ctrl | (1 << 1) } else { ctrl & !(1 << 1) };
+        let ctrl = if value {
+            ctrl | (1 << 1)
+        } else {
+            ctrl & !(1 << 1)
+        };
         self.control.write(ctrl);
     }
     fn set_cycle_state(&mut self, cycle: bool) {
@@ -608,8 +646,7 @@ impl EventRing {
         }
         let e = self.ring.as_ref().current();
         let eptr = self.ring.as_ref().current_ptr() as u64;
-        unsafe { self.ring.get_unchecked_mut() }
-            .advance_index_notoggle(self.cycle_state_ours)?;
+        unsafe { self.ring.get_unchecked_mut() }.advance_index_notoggle(self.cycle_state_ours)?;
         unsafe {
             let erdp = self.erdp.expect("erdp is not set");
             write_volatile(erdp, eptr | (*erdp & 0b1111));
@@ -854,6 +891,11 @@ impl PciXhciDriver {
         }
         if let Some(port) = connected_port {
             info!("xhci: {port} is connected");
+            if let Some(portsc) = xhc.regs.portsc.get(port) {
+                info!("xhci: resetting port {port}");
+                portsc.reset_port().await;
+                info!("xhci: port {port} has been reset");
+            }
         }
         Ok(())
     }
