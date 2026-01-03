@@ -289,6 +289,13 @@ impl PortScEntry {
             yield_execution().await
         }
     }
+    pub fn ped(&self) -> bool {
+        // PED - Port Enabled/Disabled - RW1CS
+        self.bit(1)
+    }
+    pub fn is_enabled(&self) -> bool {
+        self.pp() && self.ccs() && self.ped() && !self.pr()
+    }
 }
 
 // ============================================================
@@ -895,6 +902,9 @@ impl PciXhciDriver {
                 info!("xhci: resetting port {port}");
                 portsc.reset_port().await;
                 info!("xhci: port {port} has been reset");
+                if portsc.is_enabled() {
+                    info!("xhci: port {port} is enabled");
+                }
             }
         }
         Ok(())
