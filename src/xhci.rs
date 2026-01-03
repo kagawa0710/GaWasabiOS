@@ -4,6 +4,7 @@ use crate::allocator::ALLOCATOR;
 use crate::bits::extract_bits;
 use crate::executor::spawn_global;
 use crate::info;
+use crate::mmio::IoBox;
 use crate::mmio::Mmio;
 use crate::mutex::Mutex;
 use crate::pci::BarMem64;
@@ -12,6 +13,7 @@ use crate::pci::Pci;
 use crate::pci::VendorDeviceId;
 use crate::result::Result;
 use crate::volatile::Volatile;
+use crate::x86::busy_loop_hint;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::alloc::Layout;
@@ -59,6 +61,20 @@ impl CapabilityRegisters {
 // ============================================================
 // Operational Registers (xHCI spec 5.4)
 // ============================================================
+#[repr(C, align(64))]
+struct RawDeviceContextBaseAddressArray {
+    scratchpad_table_ptr: *const *const u8,
+    context: [u64; 255],
+    _pinned: PhantomPinned,
+}
+const _: () = assert!(size_of::<RawDeviceContextBaseAddressArray>() == 2048);
+
+impl RawDeviceContextBaseAddressArray {
+    fn new() -> Self {
+        unsafe { MaybeUninit::zeroed().assume_init() }
+    }
+}
+
 #[repr(C)]
 struct OperationalRegisters {
     usbcmd: Volatile<u32>,
@@ -68,12 +84,16 @@ struct OperationalRegisters {
     dnctrl: Volatile<u32>,
     crcr: Volatile<u64>,
     rsvdz2: [u64; 2],
-    dcbaap: Volatile<*mut RawDeviceContextBaseAddressArray>,
+    dcbaap: Volatile<*const RawDeviceContextBaseAddressArray>,
     config: Volatile<u64>,
 }
 const _: () = assert!(size_of::<OperationalRegisters>() == 0x40);
 
 impl OperationalRegisters {
+    const STATUS_HC_HALTED: u32 = 0b0001;
+    const CMD_RUN_STOP: u32 = 0b0001;
+    const CMD_HC_RESET: u32 = 0b0010;
+
     fn usbsts(&self) -> u32 {
         self.usbsts.read()
     }
@@ -84,6 +104,42 @@ impl OperationalRegisters {
         }
         let page_size_shift = page_size_bits.trailing_zeros();
         Ok(1 << (page_size_shift + 12))
+    }
+    fn reset_xhc(&mut self) {
+        self.clear_command_bits(Self::CMD_RUN_STOP);
+        while self.usbsts.read() & Self::STATUS_HC_HALTED == 0 {
+            busy_loop_hint();
+        }
+        self.set_command_bits(Self::CMD_HC_RESET);
+        while self.usbcmd.read() & Self::CMD_HC_RESET != 0 {
+            busy_loop_hint();
+        }
+    }
+    fn start_xhc(&mut self) {
+        self.set_command_bits(Self::CMD_RUN_STOP);
+        while self.usbsts() & Self::STATUS_HC_HALTED != 0 {
+            busy_loop_hint();
+        }
+    }
+    fn set_cmd_ring_ctrl(&mut self, ring: &CommandRing) {
+        self.crcr.write(ring.ring_phys_addr() | 1 /* Consumer Ring Cycle State */)
+    }
+    fn set_dcbaa_ptr(&mut self, dcbaa: &mut DeviceContextBaseAddressArray) -> Result<()> {
+        self.dcbaap.write(dcbaa.inner_mut_ptr());
+        Ok(())
+    }
+    fn set_num_device_slots(&mut self, num: usize) -> Result<()> {
+        let c = self.config.read();
+        let c = c & !0xFF;
+        let c = c | num as u64;
+        self.config.write(c);
+        Ok(())
+    }
+    fn set_command_bits(&mut self, bits: u32) {
+        self.usbcmd.write(self.usbcmd.read() | bits)
+    }
+    fn clear_command_bits(&mut self, bits: u32) {
+        self.usbcmd.write(self.usbcmd.read() & !bits)
     }
 }
 
@@ -110,30 +166,65 @@ struct RuntimeRegisters {
 const _: () = assert!(size_of::<RuntimeRegisters>() == 0x8020);
 
 impl RuntimeRegisters {
+    #[allow(dead_code)]
     fn mfindex(&self) -> u32 {
         self.mfindex.read()
+    }
+    fn init_irs(&mut self, index: usize, ring: &mut EventRing) -> Result<()> {
+        let irs = self.irs.get_mut(index).ok_or("Index out of range")?;
+        irs.erst_size = 1;
+        irs.erdp = ring.ring_phys_addr();
+        irs.erst_base = ring.erst_phys_addr();
+        irs.management = 0;
+        ring.set_erdp(&mut irs.erdp as *mut u64);
+        Ok(())
+    }
+}
+
+// ============================================================
+// Scratchpad Buffers
+// ============================================================
+struct ScratchpadBuffers {
+    table: Pin<Box<[*const u8]>>,
+    _bufs: Vec<Pin<Box<[u8]>>>,
+}
+
+impl ScratchpadBuffers {
+    fn alloc(cap_regs: &CapabilityRegisters, op_regs: &OperationalRegisters) -> Result<Self> {
+        let page_size = op_regs.page_size()?;
+        info!("xhci: page_size = {page_size}");
+
+        let num_scratchpad_bufs = cap_regs.num_scratchpad_bufs();
+        info!("xhci: original num_scratchpad_bufs = {num_scratchpad_bufs}");
+
+        let num_scratchpad_bufs = max(num_scratchpad_bufs, 1);
+
+        let mut bufs: Vec<Pin<Box<[u8]>>> = Vec::new();
+        let mut table_vec: Vec<*const u8> = Vec::new();
+
+        for _ in 0..num_scratchpad_bufs {
+            let buf = ALLOCATOR.alloc_with_options(
+                Layout::from_size_align(page_size, page_size)
+                    .map_err(|_| "Failed to allocate scratchpad buffer")?,
+            );
+            let buf_slice = unsafe { slice::from_raw_parts_mut(buf, page_size) };
+            buf_slice.fill(0);
+            table_vec.push(buf as *const u8);
+            bufs.push(Pin::new(unsafe { Box::from_raw(buf_slice as *mut [u8]) }));
+        }
+
+        let table: Box<[*const u8]> = table_vec.into_boxed_slice();
+        let table = Pin::new(table);
+
+        Ok(Self { table, _bufs: bufs })
     }
 }
 
 // ============================================================
 // Device Context Structures
 // ============================================================
-#[repr(C, align(64))]
-struct RawDeviceContextBaseAddressArray {
-    scratchpad_table_ptr: *const *const u8,
-    context: [u64; 255],
-    _pinned: PhantomPinned,
-}
-const _: () = assert!(size_of::<RawDeviceContextBaseAddressArray>() == 2048);
-
-impl RawDeviceContextBaseAddressArray {
-    fn new() -> Self {
-        unsafe { MaybeUninit::zeroed().assume_init() }
-    }
-}
-
 #[repr(C, align(32))]
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 struct EndpointContext {
     data: [u32; 2],
     tr_dequeue_ptr: Volatile<u64>,
@@ -161,51 +252,10 @@ struct OutputContext {
 const _: () = assert!(size_of::<OutputContext>() <= 4096);
 
 // ============================================================
-// Scratchpad Buffers
-// ============================================================
-struct ScratchpadBuffers {
-    table: Pin<Box<[*const u8]>>,
-    _bufs: Vec<Pin<Box<[u8]>>>,
-}
-
-impl ScratchpadBuffers {
-    fn alloc(cap_regs: &CapabilityRegisters, op_regs: &OperationalRegisters) -> Result<Self> {
-        let page_size = op_regs.page_size()?;
-        info!("xhci: page_size = {page_size}");
-
-        let num_scratchpad_bufs = cap_regs.num_scratchpad_bufs();
-        info!("xhci: num_scratchpad_bufs = {num_scratchpad_bufs}");
-
-        let num_scratchpad_bufs = max(num_scratchpad_bufs, 1);
-
-        let mut bufs: Vec<Pin<Box<[u8]>>> = Vec::new();
-        let mut table_vec: Vec<*const u8> = Vec::new();
-
-        for _ in 0..num_scratchpad_bufs {
-            let buf = ALLOCATOR.alloc_with_options(
-                Layout::from_size_align(page_size, page_size)
-                    .map_err(|_| "Failed to allocate scratchpad buffer")?,
-            );
-            let buf_slice = unsafe { slice::from_raw_parts_mut(buf, page_size) };
-            buf_slice.fill(0);
-            table_vec.push(buf as *const u8);
-            bufs.push(Pin::new(unsafe { Box::from_raw(buf_slice as *mut [u8]) }));
-        }
-
-        let table: Box<[*const u8]> = table_vec.into_boxed_slice();
-        let table = Pin::new(table);
-
-        info!("xhci: Scratchpad buffers allocated");
-
-        Ok(Self { table, _bufs: bufs })
-    }
-}
-
-// ============================================================
 // Device Context Base Address Array
 // ============================================================
 struct DeviceContextBaseAddressArray {
-    _inner: Pin<Box<RawDeviceContextBaseAddressArray>>,
+    inner: Pin<Box<RawDeviceContextBaseAddressArray>>,
     _context: [Option<Pin<Box<OutputContext>>>; 255],
     _scratchpad_buffers: ScratchpadBuffers,
 }
@@ -219,19 +269,228 @@ impl DeviceContextBaseAddressArray {
 
         let mut inner = Box::pin(RawDeviceContextBaseAddressArray::new());
 
-        // Set scratchpad table pointer
         unsafe {
             let inner_mut = Pin::get_unchecked_mut(inner.as_mut());
             inner_mut.scratchpad_table_ptr = scratchpad_buffers.table.as_ptr();
         }
 
-        info!("xhci: DeviceContextBaseAddressArray created");
-
         Self {
-            _inner: inner,
+            inner,
             _context: context,
             _scratchpad_buffers: scratchpad_buffers,
         }
+    }
+
+    fn inner_mut_ptr(&mut self) -> *const RawDeviceContextBaseAddressArray {
+        self.inner.as_ref().get_ref() as *const RawDeviceContextBaseAddressArray
+    }
+}
+
+// ============================================================
+// TRB (Transfer Request Block) Structures
+// ============================================================
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u32)]
+#[allow(unused)]
+enum TrbType {
+    Normal = 1,
+    SetupStage = 2,
+    DataStage = 3,
+    StatusStage = 4,
+    Link = 6,
+    EnableSlotCommand = 9,
+    AddressDeviceCommand = 11,
+    ConfigureEndpointCommand = 12,
+    EvaluateContextCommand = 13,
+    NoOpCommand = 23,
+    TransferEvent = 32,
+    CommandCompletionEvent = 33,
+    PortStatusChangeEvent = 34,
+    HostControllerEvent = 37,
+}
+
+#[derive(Default, Clone, Debug)]
+#[repr(C, align(16))]
+struct GenericTrbEntry {
+    data: Volatile<u64>,
+    option: Volatile<u32>,
+    control: Volatile<u32>,
+}
+const _: () = assert!(size_of::<GenericTrbEntry>() == 16);
+
+#[allow(dead_code)]
+impl GenericTrbEntry {
+    fn trb_link(ring: &TrbRing) -> Self {
+        let mut trb = GenericTrbEntry::default();
+        trb.set_trb_type(TrbType::Link);
+        trb.data.write(ring.phys_addr());
+        trb.set_toggle_cycle(true);
+        trb
+    }
+    fn set_trb_type(&mut self, trb_type: TrbType) {
+        let ctrl = self.control.read();
+        let ctrl = (ctrl & !(0x3F << 10)) | ((trb_type as u32) << 10);
+        self.control.write(ctrl);
+    }
+    fn set_toggle_cycle(&mut self, value: bool) {
+        let ctrl = self.control.read();
+        let ctrl = if value { ctrl | (1 << 1) } else { ctrl & !(1 << 1) };
+        self.control.write(ctrl);
+    }
+    fn set_cycle_state(&mut self, cycle: bool) {
+        let ctrl = self.control.read();
+        let ctrl = if cycle { ctrl | 1 } else { ctrl & !1 };
+        self.control.write(ctrl);
+    }
+    fn cycle_state(&self) -> bool {
+        (self.control.read() & 1) != 0
+    }
+    fn trb_type(&self) -> u32 {
+        (self.control.read() >> 10) & 0x3F
+    }
+}
+
+#[repr(C, align(4096))]
+#[derive(Default)]
+struct TrbRing {
+    trb: [Volatile<GenericTrbEntry>; Self::NUM_TRB],
+    current_index: usize,
+}
+const _: () = assert!(size_of::<TrbRing>() <= 4096);
+
+#[allow(dead_code)]
+impl TrbRing {
+    const NUM_TRB: usize = 16;
+
+    fn num_trbs(&self) -> usize {
+        Self::NUM_TRB
+    }
+    fn write(&mut self, index: usize, trb: GenericTrbEntry) -> Result<()> {
+        if index < self.trb.len() {
+            self.trb[index].write(trb);
+            Ok(())
+        } else {
+            Err("TrbRing Out of Range")
+        }
+    }
+    fn phys_addr(&self) -> u64 {
+        &self.trb[0] as *const Volatile<GenericTrbEntry> as u64
+    }
+    fn current(&self) -> GenericTrbEntry {
+        self.trb[self.current_index].read()
+    }
+    fn current_ptr(&self) -> usize {
+        &self.trb[self.current_index] as *const Volatile<GenericTrbEntry> as usize
+    }
+    fn current_index(&self) -> usize {
+        self.current_index
+    }
+    fn advance_index_notoggle(&mut self, cycle_ours: bool) -> Result<()> {
+        if self.current().cycle_state() != cycle_ours {
+            return Err("cycle state mismatch");
+        }
+        self.current_index = (self.current_index + 1) % self.trb.len();
+        Ok(())
+    }
+    fn write_current(&mut self, trb: GenericTrbEntry) {
+        self.write(self.current_index, trb)
+            .expect("writing to the current index shall not fail")
+    }
+    fn advance_index(&mut self, new_cycle: bool) -> Result<()> {
+        if self.current().cycle_state() == new_cycle {
+            return Err("cycle state does not change");
+        }
+        let mut current = self.current();
+        current.set_cycle_state(new_cycle);
+        self.write_current(current);
+        self.current_index = (self.current_index + 1) % self.trb.len();
+        Ok(())
+    }
+}
+
+// ============================================================
+// Event Ring
+// ============================================================
+#[repr(C, align(4096))]
+struct EventRingSegmentTableEntry {
+    ring_segment_base_address: u64,
+    ring_segment_size: u16,
+    _rsvdz: [u16; 3],
+}
+const _: () = assert!(size_of::<EventRingSegmentTableEntry>() == 4096);
+
+impl EventRingSegmentTableEntry {
+    fn new(ring: &IoBox<TrbRing>) -> Result<Self> {
+        Ok(EventRingSegmentTableEntry {
+            ring_segment_base_address: ring.as_ref() as *const TrbRing as u64,
+            ring_segment_size: ring
+                .as_ref()
+                .num_trbs()
+                .try_into()
+                .or(Err("Too large num trbs"))?,
+            _rsvdz: Default::default(),
+        })
+    }
+}
+
+struct EventRing {
+    ring: IoBox<TrbRing>,
+    erst: IoBox<EventRingSegmentTableEntry>,
+    _cycle_state_ours: bool,
+    erdp: Option<*mut u64>,
+}
+
+impl EventRing {
+    fn new() -> Result<Self> {
+        let ring: IoBox<TrbRing> = IoBox::new();
+        let erst_entry = EventRingSegmentTableEntry::new(&ring)?;
+        let mut erst: IoBox<EventRingSegmentTableEntry> = IoBox::new();
+        unsafe {
+            *erst.get_unchecked_mut() = erst_entry;
+        }
+        Ok(Self {
+            ring,
+            erst,
+            _cycle_state_ours: true,
+            erdp: None,
+        })
+    }
+    fn ring_phys_addr(&self) -> u64 {
+        self.ring.as_ref() as *const TrbRing as u64
+    }
+    fn set_erdp(&mut self, erdp: *mut u64) {
+        self.erdp = Some(erdp);
+    }
+    fn erst_phys_addr(&self) -> u64 {
+        self.erst.as_ref() as *const EventRingSegmentTableEntry as u64
+    }
+}
+
+// ============================================================
+// Command Ring
+// ============================================================
+struct CommandRing {
+    ring: IoBox<TrbRing>,
+    _cycle_state_ours: bool,
+}
+
+impl CommandRing {
+    fn ring_phys_addr(&self) -> u64 {
+        self.ring.as_ref() as *const TrbRing as u64
+    }
+}
+
+impl Default for CommandRing {
+    fn default() -> Self {
+        let mut this = Self {
+            ring: IoBox::new(),
+            _cycle_state_ours: false,
+        };
+        let link_trb = GenericTrbEntry::trb_link(this.ring.as_ref());
+        unsafe { this.ring.get_unchecked_mut() }
+            .write(TrbRing::NUM_TRB - 1, link_trb)
+            .expect("failed to write a link trb");
+        this
     }
 }
 
@@ -242,22 +501,75 @@ struct Controller {
     cap_regs: Mmio<CapabilityRegisters>,
     op_regs: Mmio<OperationalRegisters>,
     rt_regs: Mmio<RuntimeRegisters>,
-    _device_context_base_array: Mutex<DeviceContextBaseAddressArray>,
+    device_context_base_array: Mutex<DeviceContextBaseAddressArray>,
+    primary_event_ring: Mutex<EventRing>,
+    command_ring: Mutex<CommandRing>,
 }
 
 impl Controller {
     fn new(
         cap_regs: Mmio<CapabilityRegisters>,
-        op_regs: Mmio<OperationalRegisters>,
+        mut op_regs: Mmio<OperationalRegisters>,
         rt_regs: Mmio<RuntimeRegisters>,
-        device_context_base_array: DeviceContextBaseAddressArray,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        // 1. Reset xHC
+        unsafe { op_regs.get_unchecked_mut().reset_xhc() };
+
+        // 2. Allocate scratchpad buffers
+        let scratchpad_buffers =
+            ScratchpadBuffers::alloc(cap_regs.as_ref(), op_regs.as_ref())?;
+
+        // 3. Create device context base address array
+        let device_context_base_array = DeviceContextBaseAddressArray::new(scratchpad_buffers);
+        let device_context_base_array = Mutex::new(device_context_base_array);
+
+        // 4. Create event ring
+        let primary_event_ring = Mutex::new(EventRing::new()?);
+
+        // 5. Create command ring
+        let command_ring = Mutex::new(CommandRing::default());
+
+        let mut xhc = Self {
             cap_regs,
             op_regs,
             rt_regs,
-            _device_context_base_array: Mutex::new(device_context_base_array),
-        }
+            device_context_base_array,
+            primary_event_ring,
+            command_ring,
+        };
+
+        // 6. Initialize primary event ring
+        xhc.init_primary_event_ring()?;
+
+        // 7. Initialize slots and contexts
+        xhc.init_slots_and_contexts()?;
+
+        // 8. Initialize command ring
+        xhc.init_command_ring();
+
+        // 9. Start xHC
+        info!("Starting xHC...");
+        unsafe { xhc.op_regs.get_unchecked_mut() }.start_xhc();
+        info!("xHC started running!");
+
+        Ok(xhc)
+    }
+
+    fn init_primary_event_ring(&mut self) -> Result<()> {
+        unsafe { self.rt_regs.get_unchecked_mut() }
+            .init_irs(0, &mut self.primary_event_ring.lock())
+    }
+
+    fn init_command_ring(&mut self) {
+        unsafe { self.op_regs.get_unchecked_mut() }
+            .set_cmd_ring_ctrl(&self.command_ring.lock());
+    }
+
+    fn init_slots_and_contexts(&mut self) -> Result<()> {
+        let num_slots = self.cap_regs.as_ref().num_of_device_slots();
+        unsafe { self.op_regs.get_unchecked_mut() }.set_num_device_slots(num_slots)?;
+        unsafe { self.op_regs.get_unchecked_mut() }
+            .set_dcbaa_ptr(&mut self.device_context_base_array.lock())
     }
 }
 
@@ -307,39 +619,23 @@ impl PciXhciDriver {
     }
 
     pub fn attach(pci: &Pci, bdf: BusDeviceFunction) -> Result<()> {
-        info!("xhci: Found at {bdf:?}");
+        info!("Xhci found at: {bdf:?}");
         pci.disable_interrupt(bdf)?;
         pci.enable_bus_master(bdf)?;
 
         let bar0 = pci.try_bar0_mem64(bdf)?;
         bar0.disable_cache();
-        info!("xhci: {bar0:?}");
 
         let (cap_regs, op_regs, rt_regs) = Self::setup_xhc_registers(&bar0)?;
 
-        // Allocate scratchpad buffers
-        let scratchpad_buffers = ScratchpadBuffers::alloc(cap_regs.as_ref(), op_regs.as_ref())?;
+        let xhc = Controller::new(cap_regs, op_regs, rt_regs)?;
 
-        // Create device context base address array
-        let device_context_base_array = DeviceContextBaseAddressArray::new(scratchpad_buffers);
-
-        // Create controller
-        let xhc = Controller::new(cap_regs, op_regs, rt_regs, device_context_base_array);
-
-        // Spawn the run task
         spawn_global(Self::run(xhc));
 
         Ok(())
     }
 
-    async fn run(xhc: Controller) -> Result<()> {
-        info!(
-            "xhci: cap_regs.MaxSlots = {}",
-            xhc.cap_regs.as_ref().num_of_device_slots()
-        );
-        info!("xhci: op_regs.USBSTS = {}", xhc.op_regs.as_ref().usbsts());
-        info!("xhci: rt_regs.MFINDEX = {}", xhc.rt_regs.as_ref().mfindex());
-
+    async fn run(_xhc: Controller) -> Result<()> {
         Ok(())
     }
 }
