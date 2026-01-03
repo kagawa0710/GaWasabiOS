@@ -26,10 +26,13 @@ use core::marker::PhantomPinned;
 use core::mem::size_of;
 use core::mem::MaybeUninit;
 use core::ops::Range;
+use core::future::Future;
 use core::pin::Pin;
 use core::ptr::read_volatile;
 use core::ptr::write_volatile;
 use core::slice;
+use core::task::Context;
+use core::task::Poll;
 
 // ============================================================
 // XhcRegisters - レジスタ群をまとめる構造体
@@ -38,6 +41,7 @@ struct XhcRegisters {
     cap_regs: Mmio<CapabilityRegisters>,
     op_regs: Mmio<OperationalRegisters>,
     rt_regs: Mmio<RuntimeRegisters>,
+    doorbell_regs: Vec<Rc<Doorbell>>,
     portsc: PortSc,
 }
 
@@ -75,6 +79,9 @@ impl CapabilityRegisters {
     fn num_scratchpad_bufs(&self) -> usize {
         (extract_bits(self.hcsparams2.read(), 21, 5) << 5
             | extract_bits(self.hcsparams2.read(), 27, 5)) as usize
+    }
+    pub fn dboff(&self) -> usize {
+        self.dboff.read() as usize
     }
 }
 
@@ -299,6 +306,39 @@ impl PortScEntry {
 }
 
 // ============================================================
+// Doorbell Registers
+// ============================================================
+// [xhci] 4.7 Doorbells
+// index 0: for the host controller
+// index 1-255: for device contexts (index by a Slot ID)
+// DO NOT implement Copy trait - this should be the only instance to have the
+// ptr.
+pub struct Doorbell {
+    ptr: Mutex<*mut u32>,
+}
+
+impl Doorbell {
+    pub fn new(ptr: *mut u32) -> Self {
+        Self {
+            ptr: Mutex::new(ptr),
+        }
+    }
+    // [xhci] 5.6 Doorbell Registers
+    // bit 0..8: DB Target
+    // bit 8..16: RsvdZ
+    // bit 16..32: DB Task ID
+    // index 0: for the host controller
+    // index 1-255: for device contexts (index by a Slot ID)
+    pub fn notify(&self, target: u8, task: u16) {
+        let value = (target as u32) | (task as u32) << 16;
+        // SAFETY: This is safe as long as the ptr is valid
+        unsafe {
+            write_volatile(*self.ptr.lock(), value);
+        }
+    }
+}
+
+// ============================================================
 // Scratchpad Buffers
 // ============================================================
 struct ScratchpadBuffers {
@@ -475,6 +515,11 @@ impl GenericTrbEntry {
     fn cycle_state(&self) -> bool {
         self.control.read_bits(0, 1) != 0
     }
+    pub fn cmd_enable_slot() -> Self {
+        let mut trb = Self::default();
+        trb.set_trb_type(TrbType::EnableSlotCommand);
+        trb
+    }
 }
 
 #[repr(C, align(4096))]
@@ -604,10 +649,46 @@ impl EventWaitInfo {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 struct EventFuture {
     wait_on: Rc<EventWaitInfo>,
     _pinned: PhantomPinned,
+}
+
+impl EventFuture {
+    fn new(event_ring: &Mutex<EventRing>, cond: EventWaitCond) -> Self {
+        let wait_on = EventWaitInfo {
+            cond,
+            trbs: Default::default(),
+        };
+        let wait_on = Rc::new(wait_on);
+        event_ring.lock().register_waiter(&wait_on);
+        Self {
+            wait_on,
+            _pinned: PhantomPinned,
+        }
+    }
+    fn new_for_trb(event_ring: &Mutex<EventRing>, trb_addr: u64) -> Self {
+        let trb_addr = Some(trb_addr);
+        Self::new(
+            event_ring,
+            EventWaitCond {
+                trb_addr,
+                ..Default::default()
+            },
+        )
+    }
+}
+
+impl Future for EventFuture {
+    type Output = Result<GenericTrbEntry>;
+    fn poll(self: Pin<&mut Self>, _: &mut Context) -> Poll<Result<GenericTrbEntry>> {
+        let mut_self = unsafe { self.get_unchecked_mut() };
+        if let Some(trb) = mut_self.wait_on.trbs.lock().pop_front() {
+            Poll::Ready(Ok(trb))
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
 // ============================================================
@@ -701,6 +782,10 @@ impl EventRing {
     fn has_next_event(&self) -> bool {
         self.ring.as_ref().current().cycle_state() == self.cycle_state_ours
     }
+    pub fn register_waiter(&mut self, wait: &Rc<EventWaitInfo>) {
+        let wait = Rc::downgrade(wait);
+        self.wait_list.push_back(wait);
+    }
 }
 
 // ============================================================
@@ -708,12 +793,32 @@ impl EventRing {
 // ============================================================
 struct CommandRing {
     ring: IoBox<TrbRing>,
-    _cycle_state_ours: bool,
+    cycle_state_ours: bool,
 }
 
 impl CommandRing {
     fn ring_phys_addr(&self) -> u64 {
         self.ring.as_ref() as *const TrbRing as u64
+    }
+    pub fn push(&mut self, mut src: GenericTrbEntry) -> Result<u64> {
+        // Calling get_unchecked_mut() here is safe
+        // as far as this function does not move the ring out.
+        let ring = unsafe { self.ring.get_unchecked_mut() };
+        if ring.current().cycle_state() != self.cycle_state_ours {
+            return Err("Command Ring is Full");
+        }
+        src.set_cycle_state(self.cycle_state_ours);
+        let dst_ptr = ring.current_ptr();
+        ring.write_current(src);
+        ring.advance_index(!self.cycle_state_ours)?;
+        if ring.current().trb_type() == TrbType::Link as u32 {
+            // Reached to Link TRB. Let's skip it and toggle the cycle.
+            ring.advance_index(!self.cycle_state_ours)?;
+            self.cycle_state_ours = !self.cycle_state_ours;
+        }
+        // The returned ptr will be used for waiting on command completion
+        // events.
+        Ok(dst_ptr as u64)
     }
 }
 
@@ -721,7 +826,7 @@ impl Default for CommandRing {
     fn default() -> Self {
         let mut this = Self {
             ring: IoBox::new(),
-            _cycle_state_ours: false,
+            cycle_state_ours: false,
         };
         let link_trb = GenericTrbEntry::trb_link(this.ring.as_ref());
         unsafe { this.ring.get_unchecked_mut() }
@@ -800,6 +905,16 @@ impl Controller {
         unsafe { self.regs.op_regs.get_unchecked_mut() }
             .set_dcbaa_ptr(&mut self.device_context_base_array.lock())
     }
+
+    async fn send_command(&self, cmd: GenericTrbEntry) -> Result<GenericTrbEntry> {
+        let cmd_ptr = self.command_ring.lock().push(cmd)?;
+        self.notify_xhc();
+        EventFuture::new_for_trb(&self.primary_event_ring, cmd_ptr).await
+    }
+
+    fn notify_xhc(&self) {
+        self.regs.doorbell_regs[0].notify(0, 0);
+    }
 }
 
 // ============================================================
@@ -838,11 +953,23 @@ impl PciXhciDriver {
             Mmio::from_raw(bar0.addr().add(cap_regs.as_ref().rtsoff()) as *mut RuntimeRegisters)
         };
         let portsc = PortSc::new(bar0, cap_regs.as_ref());
+        let num_slots = cap_regs.as_ref().num_of_device_slots();
+        let mut doorbell_regs = Vec::new();
+        for i in 0..=num_slots {
+            let ptr = unsafe {
+                bar0.addr().add(cap_regs.as_ref().dboff()).add(4 * i) as *mut u32
+            };
+            doorbell_regs.push(Rc::new(Doorbell::new(ptr)));
+        }
+        // number of doorbells will be 1 + num_slots since doorbell[0] is for the
+        // host controller.
+        assert!(doorbell_regs.len() == 1 + num_slots);
 
         Ok(XhcRegisters {
             cap_regs,
             op_regs,
             rt_regs,
+            doorbell_regs,
             portsc,
         })
     }
@@ -898,11 +1025,12 @@ impl PciXhciDriver {
         }
         if let Some(port) = connected_port {
             info!("xhci: {port} is connected");
-            Self::init_port(xhc, port).await?;
+            let slot = Self::init_port(xhc, port).await?;
+            info!("slot {slot} is assigned for port {port}");
         }
         Ok(())
     }
-    async fn init_port(xhc: Rc<Controller>, port: usize) -> Result<()> {
+    async fn init_port(xhc: Rc<Controller>, port: usize) -> Result<u8> {
         let portsc = xhc.regs.portsc.get(port).ok_or("invalid portsc")?;
         info!("xhci: resetting port {port}");
         portsc.reset_port().await;
@@ -912,6 +1040,10 @@ impl PciXhciDriver {
             .then_some(())
             .ok_or("port is not enabled")?;
         info!("xhci: port {port} is enabled");
-        Ok(())
+        let slot = xhc
+            .send_command(GenericTrbEntry::cmd_enable_slot())
+            .await?
+            .slot_id();
+        Ok(slot)
     }
 }
