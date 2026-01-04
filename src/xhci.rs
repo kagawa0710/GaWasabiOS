@@ -631,6 +631,16 @@ pub enum UsbDescriptorType {
     Endpoint = 5,
 }
 
+// [hid_1_11]:
+// 7.2.5 Get_Protocol Request
+// 7.2.6 Set_Protocol Request
+#[repr(u8)]
+#[allow(unused)]
+pub enum UsbHidProtocol {
+    BootProtocol = 0,
+    ReportProtocol = 1,
+}
+
 #[derive(Debug, Copy, Clone, Default)]
 #[allow(unused)]
 #[repr(packed)]
@@ -695,6 +705,22 @@ pub struct InterfaceDescriptor {
     interface_string_index: u8,
 }
 const _: () = assert!(size_of::<InterfaceDescriptor>() == 9);
+
+impl InterfaceDescriptor {
+    pub fn triple(&self) -> (u8, u8, u8) {
+        (
+            self.interface_class,
+            self.interface_subclass,
+            self.interface_protocol,
+        )
+    }
+    pub fn interface_number(&self) -> u8 {
+        self.interface_number
+    }
+    pub fn alt_setting(&self) -> u8 {
+        self.alt_setting
+    }
+}
 
 unsafe impl IntoPinnedMutableSlice for InterfaceDescriptor {}
 unsafe impl Sliceable for InterfaceDescriptor {}
@@ -792,7 +818,51 @@ const _: () = assert!(size_of::<SetupStageTrb>() == 16);
 
 impl SetupStageTrb {
     const CTRL_BIT_IDT: u32 = 1 << 6; // Immediate Data
+    const CTRL_TRANSFER_TYPE_NO_DATA: u32 = 0 << 16;
     const CTRL_TRANSFER_TYPE_IN: u32 = 3 << 16;
+
+    // Request type bits
+    pub const REQ_TYPE_DIR_DEVICE_TO_HOST: u8 = 1 << 7;
+    pub const REQ_TYPE_TYPE_CLASS: u8 = 1 << 5;
+    pub const REQ_TYPE_TO_INTERFACE: u8 = 1;
+
+    // Standard requests
+    pub const REQ_SET_CONFIGURATION: u8 = 9;
+    pub const REQ_SET_INTERFACE: u8 = 11;
+
+    // HID class requests
+    pub const REQ_GET_REPORT: u8 = 1;
+    pub const REQ_SET_PROTOCOL: u8 = 11;
+
+    pub fn new(
+        request_type: u8,
+        request: u8,
+        value: u16,
+        index: u16,
+        length: u16,
+    ) -> Self {
+        let transfer_type = if length > 0 {
+            if request_type & Self::REQ_TYPE_DIR_DEVICE_TO_HOST != 0 {
+                Self::CTRL_TRANSFER_TYPE_IN
+            } else {
+                // OUT transfer - not implemented yet
+                Self::CTRL_TRANSFER_TYPE_NO_DATA
+            }
+        } else {
+            Self::CTRL_TRANSFER_TYPE_NO_DATA
+        };
+        Self {
+            request_type,
+            request,
+            value,
+            index,
+            length,
+            option: 8,
+            control: (TrbType::SetupStage as u32) << 10
+                | Self::CTRL_BIT_IDT
+                | transfer_type,
+        }
+    }
 
     pub fn new_get_descriptor(
         desc_type: UsbDescriptorType,
@@ -866,13 +936,24 @@ pub struct StatusStageTrb {
 const _: () = assert!(size_of::<StatusStageTrb>() == 16);
 
 impl StatusStageTrb {
-    const CTRL_BIT_IOC: u32 = 1 << 5;
+    const CTRL_BIT_IOC: u32 = 1 << 5; // Interrupt On Completion
+    const CTRL_BIT_DIR_IN: u32 = 1 << 16; // Direction: IN (device to host)
 
     pub fn new_out() -> Self {
         Self {
             _rsvdz: 0,
             option: 0,
             control: (TrbType::StatusStage as u32) << 10 | Self::CTRL_BIT_IOC,
+        }
+    }
+
+    pub fn new_in() -> Self {
+        Self {
+            _rsvdz: 0,
+            option: 0,
+            control: (TrbType::StatusStage as u32) << 10
+                | Self::CTRL_BIT_DIR_IN
+                | Self::CTRL_BIT_IOC,
         }
     }
 }
@@ -1476,6 +1557,107 @@ impl Controller {
 
         Ok(())
     }
+
+    pub async fn request_set_config(
+        &self,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+        config_value: u8,
+    ) -> Result<()> {
+        ctrl_ep_ring.push(
+            SetupStageTrb::new(
+                0,
+                SetupStageTrb::REQ_SET_CONFIGURATION,
+                config_value as u16,
+                0,
+                0,
+            )
+            .into(),
+        )?;
+        let trb_ptr_waiting = ctrl_ep_ring.push(StatusStageTrb::new_in().into())?;
+        self.notify_ep(slot, 1);
+        EventFuture::new_for_trb(&self.primary_event_ring, trb_ptr_waiting)
+            .await?
+            .transfer_result_ok()
+    }
+
+    pub async fn request_set_interface(
+        &self,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+        interface_number: u8,
+        alt_setting: u8,
+    ) -> Result<()> {
+        ctrl_ep_ring.push(
+            SetupStageTrb::new(
+                SetupStageTrb::REQ_TYPE_TO_INTERFACE,
+                SetupStageTrb::REQ_SET_INTERFACE,
+                alt_setting as u16,
+                interface_number as u16,
+                0,
+            )
+            .into(),
+        )?;
+        let trb_ptr_waiting = ctrl_ep_ring.push(StatusStageTrb::new_in().into())?;
+        self.notify_ep(slot, 1);
+        EventFuture::new_for_trb(&self.primary_event_ring, trb_ptr_waiting)
+            .await?
+            .transfer_result_ok()
+    }
+
+    pub async fn request_set_protocol(
+        &self,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+        interface_number: u8,
+        protocol: u8,
+    ) -> Result<()> {
+        // protocol:
+        // 0: Boot Protocol
+        // 1: Report Protocol
+        ctrl_ep_ring.push(
+            SetupStageTrb::new(
+                SetupStageTrb::REQ_TYPE_TYPE_CLASS | SetupStageTrb::REQ_TYPE_TO_INTERFACE,
+                SetupStageTrb::REQ_SET_PROTOCOL,
+                protocol as u16,
+                interface_number as u16,
+                0,
+            )
+            .into(),
+        )?;
+        let trb_ptr_waiting = ctrl_ep_ring.push(StatusStageTrb::new_in().into())?;
+        self.notify_ep(slot, 1);
+        EventFuture::new_for_trb(&self.primary_event_ring, trb_ptr_waiting)
+            .await?
+            .transfer_result_ok()
+    }
+
+    async fn request_report_bytes(
+        &self,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+        buf: Pin<&mut [u8]>,
+    ) -> Result<()> {
+        // [HID] 7.2.1 Get_Report Request
+        ctrl_ep_ring.push(
+            SetupStageTrb::new(
+                SetupStageTrb::REQ_TYPE_DIR_DEVICE_TO_HOST
+                    | SetupStageTrb::REQ_TYPE_TYPE_CLASS
+                    | SetupStageTrb::REQ_TYPE_TO_INTERFACE,
+                SetupStageTrb::REQ_GET_REPORT,
+                0x0100, // Report Type (Input=1) << 8 | Report ID (0)
+                0,
+                buf.len() as u16,
+            )
+            .into(),
+        )?;
+        let trb_ptr_waiting = ctrl_ep_ring.push(DataStageTrb::new_in(buf).into())?;
+        ctrl_ep_ring.push(StatusStageTrb::new_out().into())?;
+        self.notify_ep(slot, 1);
+        EventFuture::new_for_trb(&self.primary_event_ring, trb_ptr_waiting)
+            .await?
+            .transfer_result_ok()
+    }
 }
 
 // ============================================================
@@ -1649,6 +1831,58 @@ impl PciXhciDriver {
             )
             .await?;
             info!("xhci: {descriptors:?}");
+
+            // Find Boot Keyboard Interface
+            let mut last_config: Option<ConfigDescriptor> = None;
+            let mut boot_keyboard_interface: Option<InterfaceDescriptor> = None;
+            let mut ep_desc_list: Vec<EndpointDescriptor> = Vec::new();
+            for d in descriptors {
+                match d {
+                    UsbDescriptor::Config(e) => {
+                        if boot_keyboard_interface.is_some() {
+                            break;
+                        }
+                        last_config = Some(e);
+                        ep_desc_list.clear();
+                    }
+                    UsbDescriptor::Interface(e) => {
+                        if let (3, 1, 1) = e.triple() {
+                            boot_keyboard_interface = Some(e)
+                        }
+                    }
+                    UsbDescriptor::Endpoint(e) => {
+                        ep_desc_list.push(e);
+                    }
+                    _ => {}
+                }
+            }
+            let config_desc = last_config.ok_or("No USB KBD Boot config found")?;
+            let interface_desc =
+                boot_keyboard_interface.ok_or("No USB KBD Boot Interface found")?;
+
+            // Configure HID keyboard
+            xhc.request_set_config(slot, &mut ctrl_ep_ring, config_desc.config_value())
+                .await?;
+            xhc.request_set_interface(
+                slot,
+                &mut ctrl_ep_ring,
+                interface_desc.interface_number(),
+                interface_desc.alt_setting(),
+            )
+            .await?;
+            xhc.request_set_protocol(
+                slot,
+                &mut ctrl_ep_ring,
+                interface_desc.interface_number(),
+                UsbHidProtocol::BootProtocol as u8,
+            )
+            .await?;
+
+            // Read HID reports in loop
+            loop {
+                let report = Self::request_hid_report(&xhc, slot, &mut ctrl_ep_ring).await?;
+                info!("xhci: hid report: {report:?}");
+            }
         }
         Ok(())
     }
@@ -1806,5 +2040,17 @@ impl PciXhciDriver {
         let iter = DescriptorIterator::new(&buf);
         let descriptors: Vec<UsbDescriptor> = iter.collect();
         Ok(descriptors)
+    }
+
+    async fn request_hid_report(
+        xhc: &Rc<Controller>,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+    ) -> Result<Vec<u8>> {
+        let buf = [0u8; 8];
+        let mut buf = Box::into_pin(Box::new(buf));
+        xhc.request_report_bytes(slot, ctrl_ep_ring, buf.as_mut())
+            .await?;
+        Ok(buf.to_vec())
     }
 }
