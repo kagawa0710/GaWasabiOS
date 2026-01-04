@@ -14,6 +14,7 @@ use crate::pci::Pci;
 use crate::pci::VendorDeviceId;
 use crate::pin::IntoPinnedMutableSlice;
 use crate::result::Result;
+use crate::slice::Sliceable;
 use crate::volatile::Volatile;
 use crate::x86::busy_loop_hint;
 use core::mem::transmute;
@@ -651,6 +652,99 @@ pub struct UsbDeviceDescriptor {
 }
 const _: () = assert!(size_of::<UsbDeviceDescriptor>() == 18);
 unsafe impl IntoPinnedMutableSlice for UsbDeviceDescriptor {}
+
+#[derive(Debug, Copy, Clone, Default)]
+#[allow(unused)]
+#[repr(packed)]
+pub struct ConfigDescriptor {
+    desc_length: u8,
+    desc_type: u8,
+    total_length: u16,
+    num_of_interfaces: u8,
+    config_value: u8,
+    config_string_index: u8,
+    attribute: u8,
+    max_power: u8,
+}
+const _: () = assert!(size_of::<ConfigDescriptor>() == 9);
+
+impl ConfigDescriptor {
+    pub fn total_length(&self) -> usize {
+        self.total_length as usize
+    }
+    pub fn config_value(&self) -> u8 {
+        self.config_value
+    }
+}
+
+unsafe impl IntoPinnedMutableSlice for ConfigDescriptor {}
+unsafe impl Sliceable for ConfigDescriptor {}
+
+#[derive(Debug, Copy, Clone, Default)]
+#[allow(unused)]
+#[repr(packed)]
+pub struct InterfaceDescriptor {
+    desc_length: u8,
+    desc_type: u8,
+    interface_number: u8,
+    alt_setting: u8,
+    num_of_endpoints: u8,
+    interface_class: u8,
+    interface_subclass: u8,
+    interface_protocol: u8,
+    interface_string_index: u8,
+}
+const _: () = assert!(size_of::<InterfaceDescriptor>() == 9);
+
+unsafe impl Sliceable for InterfaceDescriptor {}
+
+#[derive(Debug, Copy, Clone)]
+pub enum UsbDescriptor {
+    Config(ConfigDescriptor),
+    Interface(InterfaceDescriptor),
+    Unknown { desc_len: u8, desc_type: u8 },
+}
+
+pub struct DescriptorIterator<'a> {
+    buf: &'a [u8],
+    index: usize,
+}
+
+impl<'a> DescriptorIterator<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self { buf, index: 0 }
+    }
+}
+
+impl<'a> Iterator for DescriptorIterator<'a> {
+    type Item = UsbDescriptor;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.buf.len() {
+            None
+        } else {
+            let buf = &self.buf[self.index..];
+            if buf.len() < 2 {
+                return None;
+            }
+            let desc_len = buf[0];
+            let desc_type = buf[1];
+            let desc = match desc_type {
+                e if e == UsbDescriptorType::Config as u8 => {
+                    UsbDescriptor::Config(ConfigDescriptor::copy_from_slice(buf).ok()?)
+                }
+                e if e == UsbDescriptorType::Interface as u8 => {
+                    UsbDescriptor::Interface(InterfaceDescriptor::copy_from_slice(buf).ok()?)
+                }
+                _ => UsbDescriptor::Unknown {
+                    desc_len,
+                    desc_type,
+                },
+            };
+            self.index += desc_len as usize;
+            Some(desc)
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 #[repr(C, align(16))]
@@ -1518,6 +1612,13 @@ impl PciXhciDriver {
                 };
                 info!("xhci: v/p/s = {vendor:?}/{product:?}/{serial:?}");
             }
+            let descriptors = Self::request_config_descriptor_and_rest(
+                &xhc,
+                slot,
+                &mut ctrl_ep_ring,
+            )
+            .await?;
+            info!("xhci: {descriptors:?}");
         }
         Ok(())
     }
@@ -1638,5 +1739,42 @@ impl PciXhciDriver {
         Ok(String::from_utf8_lossy(&buf[2..])
             .to_string()
             .replace('\0', ""))
+    }
+
+    async fn request_config_descriptor_and_rest(
+        xhc: &Rc<Controller>,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+    ) -> Result<Vec<UsbDescriptor>> {
+        // First, get just the ConfigDescriptor to know total_length
+        let config_buf = vec![0u8; size_of::<ConfigDescriptor>()];
+        let mut config_buf = Box::into_pin(config_buf.into_boxed_slice());
+        xhc.request_descriptor(
+            slot,
+            ctrl_ep_ring,
+            UsbDescriptorType::Config,
+            0,
+            0,
+            &mut config_buf,
+        )
+        .await?;
+        let config_descriptor: ConfigDescriptor =
+            ConfigDescriptor::copy_from_slice(&config_buf)?;
+        // Now get the full descriptor with all Interface/Endpoint descriptors
+        let buf = vec![0u8; config_descriptor.total_length()];
+        let mut buf = Box::into_pin(buf.into_boxed_slice());
+        xhc.request_descriptor(
+            slot,
+            ctrl_ep_ring,
+            UsbDescriptorType::Config,
+            0,
+            0,
+            &mut buf,
+        )
+        .await?;
+        // Parse the buffer using DescriptorIterator
+        let iter = DescriptorIterator::new(&buf);
+        let descriptors: Vec<UsbDescriptor> = iter.collect();
+        Ok(descriptors)
     }
 }
