@@ -19,6 +19,7 @@ use crate::volatile::Volatile;
 use crate::x86::busy_loop_hint;
 use core::mem::transmute;
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::collections::VecDeque;
 use alloc::rc::Rc;
 use alloc::rc::Weak;
@@ -1651,12 +1652,19 @@ impl Controller {
             )
             .into(),
         )?;
-        let trb_ptr_waiting = ctrl_ep_ring.push(DataStageTrb::new_in(buf).into())?;
-        ctrl_ep_ring.push(StatusStageTrb::new_out().into())?;
+        let data_ptr = ctrl_ep_ring.push(DataStageTrb::new_in(buf).into())?;
+        let status_ptr = ctrl_ep_ring.push(StatusStageTrb::new_out().into())?;
+
+        // Create futures before ringing doorbell
+        let data_future = EventFuture::new_for_trb(&self.primary_event_ring, data_ptr);
+        let status_future = EventFuture::new_for_trb(&self.primary_event_ring, status_ptr);
+
         self.notify_ep(slot, 1);
-        EventFuture::new_for_trb(&self.primary_event_ring, trb_ptr_waiting)
-            .await?
-            .transfer_result_ok()
+
+        // Wait for both Data Stage and Status Stage completion
+        data_future.await?.transfer_result_ok()?;
+        status_future.await?.transfer_result_ok()?;
+        Ok(())
     }
 }
 
@@ -1877,11 +1885,30 @@ impl PciXhciDriver {
                 UsbHidProtocol::BootProtocol as u8,
             )
             .await?;
+            let mut prev_pressed = BTreeSet::new();
 
             // Read HID reports in loop
             loop {
-                let report = Self::request_hid_report(&xhc, slot, &mut ctrl_ep_ring).await?;
-                info!("xhci: hid report: {report:?}");
+                let pressed = {
+                    let report = Self::request_hid_report(
+                        &xhc,
+                        slot,
+                        &mut ctrl_ep_ring,
+                    )
+                    .await?;
+                    BTreeSet::from_iter(
+                        report.into_iter().skip(2).filter(|id| *id != 0),
+                    )
+                };
+                let diff = pressed.symmetric_difference(&prev_pressed);
+                for id in diff {
+                    if pressed.contains(id) {
+                        info!("usb_keyboard: key down: {id}");
+                    } else {
+                        info!("usb_keyboard: key up: {id}");
+                    }
+                }
+                prev_pressed = pressed;
             }
         }
         Ok(())
