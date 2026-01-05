@@ -23,6 +23,7 @@ pub enum UsbDescriptorType {
     String = 3,
     Interface = 4,
     Endpoint = 5,
+    Hid = 0x21,
     Report = 0x22,
 }
 
@@ -30,6 +31,7 @@ pub enum UsbDescriptorType {
 pub enum UsbDescriptor {
     Config(ConfigDescriptor),
     Endpoint(EndpointDescriptor),
+    Hid(HidDescriptor),
     Interface(InterfaceDescriptor),
     Unknown { desc_len: u8, desc_type: u8 },
 }
@@ -112,6 +114,9 @@ impl<'a> Iterator for DescriptorIterator<'a> {
                 e if e == UsbDescriptorType::Endpoint as u8 => {
                     UsbDescriptor::Endpoint(EndpointDescriptor::copy_from_slice(buf).ok()?)
                 }
+                e if e == UsbDescriptorType::Hid as u8 => {
+                    UsbDescriptor::Hid(HidDescriptor::copy_from_slice(buf).ok()?)
+                }
                 _ => UsbDescriptor::Unknown {
                     desc_len,
                     desc_type,
@@ -173,6 +178,21 @@ pub struct EndpointDescriptor {
 const _: () = assert!(size_of::<EndpointDescriptor>() == 7);
 unsafe impl Sliceable for EndpointDescriptor {}
 
+#[derive(Debug, Copy, Clone, Default)]
+#[allow(unused)]
+#[repr(packed)]
+pub struct HidDescriptor {
+    pub desc_length: u8,
+    pub desc_type: u8,
+    pub hid_release: u16,
+    pub country_code: u8,
+    pub num_descriptors: u8,
+    pub descriptor_type: u8,
+    pub report_descriptor_length: u16,
+}
+const _: () = assert!(size_of::<HidDescriptor>() == 9);
+unsafe impl Sliceable for HidDescriptor {}
+
 // [hid_1_11]:
 // 7.2.5 Get_Protocol Request
 // 7.2.6 Set_Protocol Request
@@ -187,11 +207,11 @@ pub fn pick_interface_with_triple(
 ) -> Option<(
     ConfigDescriptor,
     InterfaceDescriptor,
-    Vec<EndpointDescriptor>,
+    Vec<UsbDescriptor>,
 )> {
     let mut config: Option<ConfigDescriptor> = None;
     let mut interface: Option<InterfaceDescriptor> = None;
-    let mut ep_list: Vec<EndpointDescriptor> = Vec::new();
+    let mut desc_list: Vec<UsbDescriptor> = Vec::new();
     for d in descriptors {
         match d {
             UsbDescriptor::Config(e) => {
@@ -199,21 +219,20 @@ pub fn pick_interface_with_triple(
                     break;
                 }
                 config = Some(*e);
-                ep_list.clear();
+                desc_list.clear();
             }
             UsbDescriptor::Interface(e) => {
                 if triple == e.triple() {
                     interface = Some(*e)
                 }
             }
-            UsbDescriptor::Endpoint(e) => {
-                ep_list.push(*e);
+            _ => {
+                desc_list.push(*d);
             }
-            _ => {}
         }
     }
     if let (Some(config), Some(interface)) = (config, interface) {
-        Some((config, interface, ep_list))
+        Some((config, interface, desc_list))
     } else {
         None
     }
@@ -302,9 +321,9 @@ pub async fn request_hid_report_descriptor(
     slot: u8,
     ctrl_ep_ring: &mut CommandRing,
     interface_number: u8,
+    desc_size: usize,
 ) -> Result<Vec<u8>> {
-    // HID Report Descriptor max size is typically 4096 bytes
-    let buf = vec![0u8; 256];
+    let buf = vec![0u8; desc_size];
     let mut buf = Box::into_pin(buf.into_boxed_slice());
     xhc.request_descriptor_for_interface(
         slot,
