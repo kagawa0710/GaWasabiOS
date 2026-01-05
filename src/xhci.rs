@@ -642,6 +642,7 @@ impl SetupStageTrb {
     pub const REQ_TYPE_TO_INTERFACE: u8 = 1;
 
     // Standard requests
+    pub const REQ_GET_DESCRIPTOR: u8 = 6;
     pub const REQ_SET_CONFIGURATION: u8 = 9;
     pub const REQ_SET_INTERFACE: u8 = 11;
 
@@ -1446,7 +1447,49 @@ impl Controller {
             .await?
             .transfer_result_ok()
     }
+    pub async fn request_descriptor_for_interface(
+        &self,
+        slot: u8,
+        ctrl_ep_ring: &mut CommandRing,
+        desc_type: usb::UsbDescriptorType,
+        desc_index: u8,
+        interface_number: u8,
+        buf: &mut Pin<Box<[u8]>>,
+    ) -> Result<()> {
+        // 1. Setup Stage
+        ctrl_ep_ring.push(
+            SetupStageTrb::new(
+                SetupStageTrb::REQ_TYPE_DIR_DEVICE_TO_HOST
+                    | SetupStageTrb::REQ_TYPE_TO_INTERFACE,
+                SetupStageTrb::REQ_GET_DESCRIPTOR,
+                ((desc_type as u16) << 8) | (desc_index as u16),
+                interface_number as u16,
+                buf.len() as u16,
+            )
+            .into(),
+        )?;
 
+        // 2. Data Stage
+        let data_trb = DataStageTrb::new_in(buf.as_mut());
+        let data_ptr = ctrl_ep_ring.push(data_trb.into())?;
+
+        // 3. Status Stage
+        let status_trb = StatusStageTrb::new_out();
+        let status_ptr = ctrl_ep_ring.push(status_trb.into())?;
+
+        // 4. Create futures before ringing doorbell
+        let data_future = EventFuture::new_for_trb(&self.primary_event_ring, data_ptr);
+        let status_future = EventFuture::new_for_trb(&self.primary_event_ring, status_ptr);
+
+        // 5. Ring doorbell
+        self.notify_ep(slot, 1);
+
+        // 6. Wait for Data Stage and Status Stage completion
+        data_future.await?.transfer_result_ok()?;
+        status_future.await?.transfer_result_ok()?;
+
+        Ok(())
+    }
     pub async fn request_report_bytes(
         &self,
         slot: u8,

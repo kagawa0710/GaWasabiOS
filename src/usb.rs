@@ -23,6 +23,7 @@ pub enum UsbDescriptorType {
     String = 3,
     Interface = 4,
     Endpoint = 5,
+    Report = 0x22,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -293,5 +294,26 @@ pub async fn request_hid_report(
     let mut buf = Box::into_pin(buf.into_boxed_slice());
     xhc.request_report_bytes(slot, ctrl_ep_ring, &mut buf)
         .await?;
+    Ok(buf.to_vec())
+}
+
+pub async fn request_hid_report_descriptor(
+    xhc: &Rc<Controller>,
+    slot: u8,
+    ctrl_ep_ring: &mut CommandRing,
+    interface_number: u8,
+) -> Result<Vec<u8>> {
+    // HID Report Descriptor max size is typically 4096 bytes
+    let buf = vec![0u8; 256];
+    let mut buf = Box::into_pin(buf.into_boxed_slice());
+    xhc.request_descriptor_for_interface(
+        slot,
+        ctrl_ep_ring,
+        UsbDescriptorType::Report,
+        0,
+        interface_number,
+        &mut buf,
+    )
+    .await?;
     Ok(buf.to_vec())
 }

@@ -46,7 +46,7 @@ macro_rules! error {
     ($($arg:tt)*) => ($crate::print!("[ERROR] {}:{:<3}: {}\n", file!(), line!(), format_args!($($arg)*)));
 }
 
-fn hexdump_bytes(bytes: &[u8]) {
+pub fn hexdump_bytes(bytes: &[u8]) {
     let mut i = 0;
     let mut ascii = [0u8; 16];
     let mut offset = 0;
