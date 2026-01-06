@@ -46,3 +46,6 @@ log/*
 #origin
 origin
 origin/*
+
+# Explained docs (private notes)
+explained/
