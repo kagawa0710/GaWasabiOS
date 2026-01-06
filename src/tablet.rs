@@ -1,10 +1,14 @@
 extern crate alloc;
 
+use crate::bits::extract_bits;
 use crate::bits::extract_bits_from_le_bytes;
 use crate::info;
+use crate::print::get_global_vram_resolutions;
 use crate::print::hexdump_bytes;
+use crate::range::map_value_in_range_inclusive;
 use crate::result::Result;
 use crate::usb::*;
+use core::ops::RangeInclusive;
 use crate::warn;
 use crate::xhci::CommandRing;
 use crate::xhci::Controller;
@@ -57,8 +61,27 @@ pub struct UsbHidReportInputItem {
     pub logical_max: u32,
 }
 impl UsbHidReportInputItem {
-    fn value_from_report(&self, report: &[u8]) -> Option<u64> {
-        extract_bits_from_le_bytes(report, self.bit_offset, self.bit_size)
+    fn value_from_report(&self, report: &[u8]) -> Option<i64> {
+        extract_bits_from_le_bytes(report, self.bit_offset, self.bit_size).map(|v| {
+            if self.bit_size >= 2 && extract_bits(v, self.bit_size - 1, 1) == 1 {
+                // Negative value (sign bit is set)
+                -(!extract_bits(v, 0, self.bit_size - 1) as i64) - 1
+            } else {
+                v as i64
+            }
+        })
+    }
+    fn mapped_range_from_report(
+        &self,
+        report: &[u8],
+        to_range: RangeInclusive<i64>,
+    ) -> Result<i64> {
+        let v = self.value_from_report(report).ok_or("value was empty")?;
+        map_value_in_range_inclusive(
+            (self.logical_min as i64)..=(self.logical_max as i64),
+            to_range,
+            v,
+        )
     }
 }
 
@@ -304,6 +327,9 @@ pub async fn start_usb_tablet(
         .find(|e| e.usage == UsbHidUsage::Y && e.is_absolute)
         .ok_or("Absolute pointer Y not found")?;
 
+    // Get screen resolution
+    let (vw, vh) = get_global_vram_resolutions().ok_or("global VRAM is not set")?;
+
     // Main loop: continuously read reports and display button states
     loop {
         let report = request_hid_report(xhc, slot, ctrl_ep_ring).await?;
@@ -314,8 +340,8 @@ pub async fn start_usb_tablet(
         let l = desc_button_l.value_from_report(&report);
         let r = desc_button_r.value_from_report(&report);
         let c = desc_button_c.value_from_report(&report);
-        let ax = desc_abs_x.value_from_report(&report);
-        let ay = desc_abs_y.value_from_report(&report);
+        let ax = desc_abs_x.mapped_range_from_report(&report, 0..=(vw - 1));
+        let ay = desc_abs_y.mapped_range_from_report(&report, 0..=(vh - 1));
         info!("{report:?}: ({l:?}, {c:?}, {r:?}, {ax:?}, {ay:?})");
         prev_report = report;
     }
