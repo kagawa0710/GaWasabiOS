@@ -3,6 +3,7 @@ extern crate alloc;
 use crate::bits::extract_bits;
 use crate::bits::extract_bits_from_le_bytes;
 use crate::info;
+use crate::print::draw_cursor;
 use crate::print::get_global_vram_resolutions;
 use crate::print::hexdump_bytes;
 use crate::range::map_value_in_range_inclusive;
@@ -330,19 +331,24 @@ pub async fn start_usb_tablet(
     // Get screen resolution
     let (vw, vh) = get_global_vram_resolutions().ok_or("global VRAM is not set")?;
 
-    // Main loop: continuously read reports and display button states
+    // Main loop: continuously read reports and draw cursor
     loop {
         let report = request_hid_report(xhc, slot, ctrl_ep_ring).await?;
         if report == prev_report {
             continue;
         }
 
-        let l = desc_button_l.value_from_report(&report);
-        let r = desc_button_r.value_from_report(&report);
-        let c = desc_button_c.value_from_report(&report);
+        let _l = desc_button_l.value_from_report(&report);
+        let _r = desc_button_r.value_from_report(&report);
+        let _c = desc_button_c.value_from_report(&report);
         let ax = desc_abs_x.mapped_range_from_report(&report, 0..=(vw - 1));
         let ay = desc_abs_y.mapped_range_from_report(&report, 0..=(vh - 1));
-        info!("{report:?}: ({l:?}, {c:?}, {r:?}, {ax:?}, {ay:?})");
+
+        // Draw cursor at mouse position
+        if let (Ok(x), Ok(y)) = (ax, ay) {
+            draw_cursor(x, y);
+        }
+
         prev_report = report;
     }
 }

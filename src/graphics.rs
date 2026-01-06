@@ -210,6 +210,9 @@ impl<T: Bitmap> BitmapTextWriter<T> {
     pub fn buf(&self) -> &T {
         &self.buf
     }
+    pub fn buf_mut(&mut self) -> &mut T {
+        &mut self.buf
+    }
 }
 
 impl<T: Bitmap> fmt::Write for BitmapTextWriter<T> {

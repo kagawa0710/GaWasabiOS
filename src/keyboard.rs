@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use crate::info;
+use crate::print;
 use crate::result::Result;
 use crate::usb::*;
 use crate::xhci::CommandRing;
@@ -71,6 +72,7 @@ pub async fn start_usb_keyboard(
         UsbHidProtocol::BootProtocol as u8,
     )
     .await?;
+    info!("USB keyboard started - type to see characters on screen");
     let mut prev_pressed = BTreeSet::new();
     loop {
         let pressed = {
@@ -81,9 +83,12 @@ pub async fn start_usb_keyboard(
         for id in diff {
             let e = KeyEvent::from_usb_key_id(*id);
             if pressed.contains(id) {
-                info!("usb_keyboard: key down: {id} = {e:?}");
-            } else {
-                info!("usb_keyboard: key up  : {id} = {e:?}");
+                // Key down - print character to screen
+                if let Some(c) = e.to_char() {
+                    print!("{}", c);
+                } else {
+                    print!("[{}]", id); // Debug: show unknown key id
+                }
             }
         }
         prev_pressed = pressed;

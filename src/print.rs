@@ -1,3 +1,4 @@
+use crate::graphics::fill_rect;
 use crate::graphics::Bitmap;
 use crate::graphics::BitmapTextWriter;
 use crate::mutex::Mutex;
@@ -8,6 +9,7 @@ use core::mem::size_of;
 use core::slice;
 
 static GLOBAL_VRAM_WRITER: Mutex<Option<BitmapTextWriter<VramBufferInfo>>> = Mutex::new(None);
+static CURSOR_STATE: Mutex<Option<(i64, i64)>> = Mutex::new(None);
 pub fn set_global_vram(vram: VramBufferInfo) {
     assert!(GLOBAL_VRAM_WRITER.lock().is_none());
     let w = BitmapTextWriter::new(vram);
@@ -19,6 +21,32 @@ pub fn get_global_vram_resolutions() -> Option<(i64, i64)> {
         .lock()
         .as_ref()
         .map(|vram| (vram.buf().width(), vram.buf().height()))
+}
+
+const CURSOR_SIZE: i64 = 8;
+const CURSOR_COLOR: u32 = 0x00FF00; // Green
+const BG_COLOR: u32 = 0x000000;     // Black
+
+/// Draw mouse cursor at (x, y)
+/// Erases old cursor position automatically
+pub fn draw_cursor(x: i64, y: i64) {
+    let mut writer = GLOBAL_VRAM_WRITER.lock();
+    let mut cursor = CURSOR_STATE.lock();
+
+    if let Some(w) = writer.as_mut() {
+        let buf = w.buf_mut();
+
+        // Erase old cursor
+        if let Some((old_x, old_y)) = *cursor {
+            let _ = fill_rect(buf, BG_COLOR, old_x, old_y, CURSOR_SIZE, CURSOR_SIZE);
+        }
+
+        // Draw new cursor (small filled square)
+        let _ = fill_rect(buf, CURSOR_COLOR, x, y, CURSOR_SIZE, CURSOR_SIZE);
+
+        // Save current position
+        *cursor = Some((x, y));
+    }
 }
 
 pub fn global_print(args: fmt::Arguments) {
